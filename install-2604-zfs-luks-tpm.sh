@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Ubuntu Server 26.04 LTS (resolute) — interactive installer  (rev. 8.2)
+#  Ubuntu 26.04 LTS (resolute) — interactive installer  (rev. 9.0)
 #  2-disk ZFS mirror · LUKS2 FDE · unlock by passphrase OR TPM2 · dracut · GRUB/UEFI
+#  LAYOUT: 64 GiB OS (rpool) + remaining data (dpool), both mirrored on LUKS2
 #  SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select.
 #
 #  Boot the Ubuntu 26.04(.1) live ISO (Desktop "Try Ubuntu" or Server shell) → network up →
@@ -20,7 +21,8 @@ SUITE=resolute
 MIRROR=http://archive.ubuntu.com/ubuntu
 EFI_MB=1024; BPOOL_MB=2048
 SWAP_MB=4096          # encrypted per disk, random key each boot
-RPOOL=rpool; BPOOL=bpool          # bpool name is mandatory for GRUB/ZFS
+ROOT_MB=65536         # ★ FIXED 64 GiB for OS
+RPOOL=rpool; BPOOL=bpool; DPOOL=dpool   # dpool = mirrored data pool
 T=/mnt
 
 die()  { echo "ERROR: $*" >&2; exit 1; }
@@ -97,17 +99,21 @@ while :; do LOCALE=$(ask "Locale" en_US.UTF-8)
   grep -q "^${LOCALE} " /usr/share/i18n/SUPPORTED 2>/dev/null && break
   echo "  unknown locale (see /usr/share/i18n/SUPPORTED, e.g. de_DE.UTF-8)"; done
 
-EXTRA_SPACE=none; EXTRA_POOL=xpool; EXTRA_MNT=/data
+# ★ OS / DATA split — 64 GiB for OS, rest for data (mirrored on both disks)
+DATA_MB=$(( SMALL - 1 - EFI_MB - BPOOL_MB - SWAP_MB - ROOT_MB - 8 ))
+(( DATA_MB > 1024 )) || die "disks too small for 64G OS + data layout (need ~80G+ each, have ${SMALL}M)"
+
+EXTRA_SPACE=none; EXTRA_POOL=xpool; EXTRA_MNT=/data/extra
 if (( EXTRA_MB >= 1024 )); then
-  hr; echo " Storage"; hr
+  hr; echo " Storage — mismatched disks"; hr
   echo " The disks differ: $BIG_DISK has $EXTRA_MB MiB more than the other."
-  echo " A mirror can only be as large as the smaller disk. The remainder can become"
-  echo " its own LUKS+TPM container with a separate UNMIRRORED pool (lost if that disk dies)."
+  echo " The mirrored dpool uses the smaller disk's remaining space."
+  echo " The leftover on the big disk can become an UNMIRRORED pool (lost if that disk dies)."
   while :; do EXTRA_SPACE=$(ask "Leftover space: pool | none" pool)
     [[ $EXTRA_SPACE =~ ^(pool|none)$ ]] && break; done
   if [[ $EXTRA_SPACE == pool ]]; then
     EXTRA_POOL=$(ask "  name of that pool" xpool)
-    EXTRA_MNT=$(ask  "  mountpoint" /data)
+    EXTRA_MNT=$(ask  "  mountpoint" /data/extra)
   fi
 fi
 
@@ -125,16 +131,15 @@ else
   echo " No /dev/tpmrm0 — enrollment deferred to first boot (sudo enroll-tpm2)."
 fi
 
-ROOT_MB=$(( SMALL - 1 - EFI_MB - BPOOL_MB - SWAP_MB - 8 ))
-(( ROOT_MB > 8192 )) || die "disks too small for this layout"
-
 # ═════════════════════════ 3. SUMMARY / CONFIRM ═════════════════════════
 clear; hr
 cat <<EOF
  Ubuntu 26.04 LTS ($SUITE) — ZFS mirror on LUKS2, passphrase + TPM2
    DISK1        : $DISK1  (${S1} MiB)
    DISK2        : $DISK2  (${S2} MiB)
-   layout/disk  : ${EFI_MB} MiB ESP | ${BPOOL_MB} MiB bpool | ${SWAP_MB} MiB swap | ${ROOT_MB} MiB LUKS→rpool
+   layout/disk  : ${EFI_MB}M ESP | ${BPOOL_MB}M bpool | ${SWAP_MB}M swap | ${ROOT_MB}M rpool(OS) | ${DATA_MB}M dpool(data)
+   OS  (rpool)  : 64 GiB mirror on LUKS2  →  /, /var, /tmp, /srv, /root
+   DATA(dpool)  : ${DATA_MB} MiB mirror on LUKS2  →  /home, /data
    leftover     : ${EXTRA_MB} MiB on $BIG_DISK → $(
      [[ $EXTRA_SPACE == pool ]] \
        && echo "LUKS → pool '$EXTRA_POOL' at $EXTRA_MNT (NO redundancy)" \
@@ -172,7 +177,6 @@ release_disks() {
   echo "→ releasing $DISK1 and $DISK2 from anything holding them"
   local d real p mp vg md h m name pool
 
-  # 1. services that grab disks on the Server live ISO
   if systemctl is-active -q multipathd 2>/dev/null \
   || systemctl is-active -q multipathd.socket 2>/dev/null; then
     echo "  stopping multipathd"
@@ -181,7 +185,6 @@ release_disks() {
   fi
   swapoff -a 2>/dev/null || true
 
-  # 2. unmount target tree from every mount namespace
   for p in $(grep -rl "$T" /proc/[0-9]*/mountinfo 2>/dev/null | cut -d/ -f3 | sort -u); do
     [[ -d /proc/$p ]] || continue
     if [[ $(readlink /proc/$p/ns/mnt 2>/dev/null) != $(readlink /proc/self/ns/mnt) ]]; then
@@ -194,7 +197,6 @@ release_disks() {
     umount -R "$T" 2>/dev/null || umount -Rl "$T" 2>/dev/null || true
   fi
 
-  # 3. every imported ZFS pool, whatever its name
   zfs unmount -a 2>/dev/null || true
   for pool in $(zpool list -H -o name 2>/dev/null); do
     echo "  exporting pool $pool"
@@ -204,13 +206,11 @@ release_disks() {
   for d in "$DISK1" "$DISK2"; do
     real=$(readlink -f "$d")
 
-    # 4. mounts of any partition of the disk
     for mp in $(lsblk -nrpo MOUNTPOINTS "$real" 2>/dev/null \
                 | tr ' ' '\n' | grep '^/' | sort -ur); do
       echo "  unmounting $mp"; umount -l "$mp" 2>/dev/null || true
     done
 
-    # 5. LVM VGs and md arrays
     for vg in $(pvs --noheadings -o vg_name "$real" "$real"?* 2>/dev/null | sort -u); do
       echo "  deactivating VG $vg"; vgchange -an "$vg" 2>/dev/null || true
     done
@@ -219,7 +219,6 @@ release_disks() {
       echo "  stopping $md"; mdadm --stop "$md" 2>/dev/null || true
     done
 
-    # 6. dm/md holders of ANY name — three passes so stacks unwind bottom-up
     local pass hh
     for pass in 1 2 3; do
       for p in "$real" "$real"?*; do [[ -b $p ]] || continue
@@ -241,7 +240,6 @@ release_disks() {
       udevadm settle || true
     done
 
-    # 7. stale signatures inside old partitions
     for p in "$real"?*; do [[ -b $p ]] || continue
       zpool labelclear -f "$p" 2>/dev/null || true
       wipefs -af "$p" >/dev/null 2>&1 || true
@@ -261,7 +259,7 @@ part() {
 
 scrub_new_partitions() {
   local d=$1 n p h
-  for n in 1 2 3 4 5; do p=$(part "$d" $n); [[ -b $p ]] || continue
+  for n in 1 2 3 4 5 6; do p=$(part "$d" $n); [[ -b $p ]] || continue
     for h in /sys/class/block/"$(basename "$(readlink -f "$p")")"/holders/*; do
       [[ -e $h ]] && dmsetup remove -f "/dev/$(basename "$h")" 2>/dev/null || true; done
     zpool labelclear -f "$p" 2>/dev/null || true
@@ -278,9 +276,10 @@ partition_disk() {
   sgdisk -n1:1M:+${EFI_MB}M   -t1:EF00 -c1:EFI        "$d" >/dev/null
   sgdisk -n2:0:+${BPOOL_MB}M  -t2:BE00 -c2:bpool      "$d" >/dev/null
   sgdisk -n3:0:+${SWAP_MB}M   -t3:8200 -c3:swap       "$d" >/dev/null
-  sgdisk -n4:0:+${ROOT_MB}M   -t4:8309 -c4:luks-root  "$d" >/dev/null
+  sgdisk -n4:0:+${ROOT_MB}M   -t4:8309 -c4:luks-root  "$d" >/dev/null   # ★ 64G OS
+  sgdisk -n5:0:+${DATA_MB}M   -t5:8309 -c5:luks-data  "$d" >/dev/null   # ★ data (mirrored)
   if [[ $EXTRA_SPACE == pool && $d == "$BIG_DISK" ]]; then
-    sgdisk -n5:0:0 -t5:8309 -c5:luks-extra "$d" >/dev/null
+    sgdisk -n6:0:0 -t6:8309 -c6:luks-extra "$d" >/dev/null              # ★ part 6 now
   fi
   partprobe "$d"; udevadm settle || true; sleep 1
   scrub_new_partitions "$d"; udevadm settle || true; }
@@ -292,11 +291,14 @@ ESP1=$(part "$DISK1" 1); ESP2=$(part "$DISK2" 1)
 BP1=$(part  "$DISK1" 2); BP2=$(part  "$DISK2" 2)
 SW1=$(part  "$DISK1" 3); SW2=$(part  "$DISK2" 3)
 RP1=$(part  "$DISK1" 4); RP2=$(part  "$DISK2" 4)
-XP=""; [[ $EXTRA_SPACE == pool ]] && XP=$(part "$BIG_DISK" 5)
+DP1=$(part  "$DISK1" 5); DP2=$(part  "$DISK2" 5)   # ★ data partitions
+XP=""; [[ $EXTRA_SPACE == pool ]] && XP=$(part "$BIG_DISK" 6)  # ★ part 6
 
-for p in "$ESP1" "$ESP2" "$BP1" "$BP2" "$SW1" "$SW2" "$RP1" "$RP2" ${XP:+"$XP"}; do
+for p in "$ESP1" "$ESP2" "$BP1" "$BP2" "$SW1" "$SW2" \
+         "$RP1" "$RP2" "$DP1" "$DP2" ${XP:+"$XP"}; do
   [[ -b $p ]] || die "partition $p did not appear after partprobe"; done
-assert_free "$ESP1" "$ESP2" "$BP1" "$BP2" "$SW1" "$SW2" "$RP1" "$RP2" ${XP:+"$XP"}
+assert_free "$ESP1" "$ESP2" "$BP1" "$BP2" "$SW1" "$SW2" \
+            "$RP1" "$RP2" "$DP1" "$DP2" ${XP:+"$XP"}
 
 mkfs.vfat -F32 -n EFI  "$ESP1" >/dev/null
 mkfs.vfat -F32 -n EFI2 "$ESP2" >/dev/null
@@ -312,15 +314,20 @@ tpm_enroll() {
   PASSWORD="$LUKS_PASS" systemd-cryptenroll \
     --tpm2-device=auto --tpm2-pcrs="$TPM_PCRS" "$1"; }
 
-echo "→ LUKS format"
-luks_format "$RP1"; luks_format "$RP2"; [[ -n $XP ]] && luks_format "$XP"
-luks_open "$RP1" luks-root1
-luks_open "$RP2" luks-root2
+echo "→ LUKS format (root + data)"
+luks_format "$RP1"; luks_format "$RP2"
+luks_format "$DP1"; luks_format "$DP2"          # ★ data LUKS
+[[ -n $XP ]] && luks_format "$XP"
+
+luks_open "$RP1" luks-root1;  luks_open "$RP2" luks-root2
+luks_open "$DP1" luks-data1;  luks_open "$DP2" luks-data2   # ★
 [[ -n $XP ]] && luks_open "$XP" luks-extra
 
 if [[ $TPM_ENROLL == now ]]; then
   echo "→ enrolling TPM2 (PCRs $TPM_PCRS)"
-  tpm_enroll "$RP1"; tpm_enroll "$RP2"; [[ -n $XP ]] && tpm_enroll "$XP"
+  tpm_enroll "$RP1"; tpm_enroll "$RP2"
+  tpm_enroll "$DP1"; tpm_enroll "$DP2"          # ★
+  [[ -n $XP ]] && tpm_enroll "$XP"
 fi
 udevadm settle || true
 
@@ -334,21 +341,27 @@ zpool create -f \
   -R $T $BPOOL mirror "$BP1" "$BP2"
 
 assert_free /dev/mapper/luks-root1 /dev/mapper/luks-root2
-echo "→ creating $RPOOL"
+echo "→ creating $RPOOL (64G OS)"
 zpool create -f \
   -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
   -O acltype=posixacl -O xattr=sa -O dnodesize=auto -O compression=zstd \
   -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=/ \
   -R $T $RPOOL mirror /dev/mapper/luks-root1 /dev/mapper/luks-root2
 
-zfs create -o canmount=off  -o mountpoint=none  $RPOOL/ROOT
-zfs create -o canmount=noauto -o mountpoint=/   $RPOOL/ROOT/ubuntu
-zfs mount $RPOOL/ROOT/ubuntu
-zfs create -o canmount=off  -o mountpoint=none  $BPOOL/BOOT
-zfs create -o mountpoint=/boot                  $BPOOL/BOOT/ubuntu
+# ★ DATA POOL — mirrored, rest of disk
+assert_free /dev/mapper/luks-data1 /dev/mapper/luks-data2
+echo "→ creating $DPOOL (data, ${DATA_MB}M)"
+zpool create -f \
+  -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
+  -O acltype=posixacl -O xattr=sa -O dnodesize=auto -O compression=zstd \
+  -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=none \
+  -R $T $DPOOL mirror /dev/mapper/luks-data1 /dev/mapper/luks-data2
 
-zfs create                                $RPOOL/home
-zfs create -o mountpoint=/root            $RPOOL/home/root;  chmod 700 $T/root
+# ── rpool datasets (OS) ──
+zfs create -o canmount=off    -o mountpoint=none  $RPOOL/ROOT
+zfs create -o canmount=noauto -o mountpoint=/     $RPOOL/ROOT/ubuntu
+zfs mount $RPOOL/ROOT/ubuntu
+
 zfs create -o canmount=off                $RPOOL/var
 zfs create -o canmount=off                $RPOOL/var/lib
 zfs create                                $RPOOL/var/log
@@ -357,7 +370,17 @@ zfs create -o com.sun:auto-snapshot=false $RPOOL/var/cache
 zfs create -o com.sun:auto-snapshot=false $RPOOL/var/tmp;   chmod 1777 $T/var/tmp
 zfs create                                $RPOOL/srv
 zfs create -o com.sun:auto-snapshot=false $RPOOL/tmp;       chmod 1777 $T/tmp
+zfs create -o mountpoint=/root            $RPOOL/root;      chmod 700 $T/root
 
+# ── dpool datasets (user data) ──
+zfs create -o mountpoint=/home            $DPOOL/home
+zfs create -o mountpoint=/data            $DPOOL/data
+
+# ── bpool datasets ──
+zfs create -o canmount=off  -o mountpoint=none  $BPOOL/BOOT
+zfs create -o mountpoint=/boot                  $BPOOL/BOOT/ubuntu
+
+# ── optional extra pool (unmirrored, big disk only) ──
 if [[ -n $XP ]]; then
   assert_free /dev/mapper/luks-extra
   echo "→ creating $EXTRA_POOL (single disk, no redundancy)"
@@ -374,23 +397,17 @@ echo "→ debootstrap $SUITE"
 debootstrap --arch=amd64 "$SUITE" $T "$MIRROR"
 
 mkdir -p $T/etc/zfs
-# Leave target cachefile EMPTY:
-#   rpool → imported by dracut from kernel cmdline (root=ZFS=…), not the cachefile
-#   bpool → imported by zfs-import-bpool.service, not zfs-import-cache
-#   xpool → imported by zfs-import-xpool.service, not zfs-import-cache
-# An empty cachefile means zfs-import-cache harmlessly does nothing.
 : > $T/etc/zfs/zpool.cache
 cp /etc/hostid $T/etc/hostid
 
 # ═════════════════════════ 9. fstab / crypttab ═════════════════════════
 U_RP1=$(cryptsetup luksUUID "$RP1"); U_RP2=$(cryptsetup luksUUID "$RP2")
+U_DP1=$(cryptsetup luksUUID "$DP1"); U_DP2=$(cryptsetup luksUUID "$DP2")  # ★
 PU_ESP1=$(blkid -s PARTUUID -o value "$ESP1")
 PU_ESP2=$(blkid -s PARTUUID -o value "$ESP2")
 PU_SW1=$(blkid -s PARTUUID -o value "$SW1")
 PU_SW2=$(blkid -s PARTUUID -o value "$SW2")
 
-# Switch to legacy mountpoint so systemd can order /boot/efi after /boot.
-# `zfs umount` removes an empty inherited mountpoint dir → recreate it first.
 for ds_mp in \
     "$BPOOL/BOOT/ubuntu:/boot" \
     "$RPOOL/var/log:/var/log" \
@@ -411,10 +428,13 @@ PARTUUID=$PU_ESP2   /boot/efi2  vfat  umask=0077,nofail,x-systemd.requires-mount
 /dev/mapper/swap1   none        swap  sw,nofail  0 0
 /dev/mapper/swap2   none        swap  sw,nofail  0 0
 EOF
+# dpool/home and dpool/data use ZFS-native mountpoints — no fstab needed.
 
 cat > $T/etc/crypttab <<EOF
 luks-root1  UUID=$U_RP1       none          luks,discard,tpm2-device=auto
 luks-root2  UUID=$U_RP2       none          luks,discard,tpm2-device=auto
+luks-data1  UUID=$U_DP1       none          luks,discard,tpm2-device=auto
+luks-data2  UUID=$U_DP2       none          luks,discard,tpm2-device=auto
 swap1       PARTUUID=$PU_SW1  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail
 swap2       PARTUUID=$PU_SW2  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail
 EOF
@@ -422,7 +442,10 @@ EOF
   "luks-extra  UUID=$(cryptsetup luksUUID "$XP")  none  luks,discard,tpm2-device=auto,nofail" \
   >> $T/etc/crypttab
 
-RD_LUKS="rd.luks.name=$U_RP1=luks-root1 rd.luks.name=$U_RP2=luks-root2 rd.luks.options=discard,tpm2-device=auto"
+# ★ dracut kernel cmdline — must unlock all 4 LUKS containers before ZFS import
+RD_LUKS="rd.luks.name=$U_RP1=luks-root1 rd.luks.name=$U_RP2=luks-root2"
+RD_LUKS+=" rd.luks.name=$U_DP1=luks-data1 rd.luks.name=$U_DP2=luks-data2"
+RD_LUKS+=" rd.luks.options=discard,tpm2-device=auto"
 
 # ═════════════════════════ 10. CHROOT ═════════════════════════
 for fs in dev proc sys; do mount --rbind /$fs $T/$fs; mount --make-rslave $T/$fs; done
@@ -430,7 +453,6 @@ mount -t tmpfs tmpfs $T/run; mkdir -p $T/run/lock
 mkdir -p $T/boot/efi $T/boot/efi2
 mount "$ESP1" $T/boot/efi
 mount "$ESP2" $T/boot/efi2
-# Give the chroot a working resolver (systemd-resolved stub is dead inside a chroot).
 rm -f $T/etc/resolv.conf; cp -L /etc/resolv.conf $T/etc/resolv.conf
 
 cat > $T/root/chroot-setup.sh <<'CHROOT'
@@ -470,7 +492,6 @@ add_dracutmodules+=" zfs crypt tpm2-tss "
 compress="zstd"
 EOS
 
-# dracut + zfs-dracut BEFORE linux-image so no initramfs-tools initrd is built
 apt-get install -y --no-install-recommends dracut zfs-dracut
 
 apt-get install -y --no-install-recommends \
@@ -478,7 +499,7 @@ apt-get install -y --no-install-recommends \
   cryptsetup systemd-cryptsetup tpm2-tools \
   grub-efi-amd64 grub-efi-amd64-signed shim-signed efibootmgr dosfstools \
   ubuntu-minimal openssh-server sudo-rs netplan.io systemd-resolved \
-  rsync curl less vim-tiny bash-completion zstd
+  rsync curl less vim-tiny bash-completion zstd ufw
 
 # GRUB
 sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"root=ZFS=$RPOOL/ROOT/ubuntu $RD_LUKS\"|" \
@@ -488,10 +509,7 @@ sed -i 's|^GRUB_TIMEOUT_STYLE=.*|GRUB_TIMEOUT_STYLE=menu|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=3|' /etc/default/grub
 grep -q '^GRUB_TERMINAL' /etc/default/grub || echo 'GRUB_TERMINAL=console' >> /etc/default/grub
 
-# bpool import service:
-#   - idempotent: if bpool already imported (e.g. by zfs-import-scan) exit 0
-#   - waits up to 20 s for slow devices (USB enclosures)
-#   - -f handles an unclean pool (power cut). Safe on a dedicated boot pool.
+# ── bpool import service ──
 cat > /etc/systemd/system/zfs-import-bpool.service <<'EOS'
 [Unit]
 Description=Import ZFS boot pool (bpool)
@@ -514,35 +532,33 @@ ExecStart=/bin/sh -c '\
 WantedBy=zfs-import.target
 EOS
 
-# extra pool import service (only if EXTRA_SPACE=pool was chosen)
-if [[ "$EXTRA_SPACE" == "pool" ]]; then
-cat > /etc/systemd/system/zfs-import-xpool.service <<EOS
+# ── dpool import service (data pool) ──
+cat > /etc/systemd/system/zfs-import-dpool.service <<'EOS'
 [Unit]
-Description=Import ZFS extra pool ($EXTRA_POOL)
+Description=Import ZFS data pool (dpool)
 DefaultDependencies=no
-After=systemd-cryptsetup@luks\\x2dextra.service
+After=systemd-cryptsetup@luks\x2ddata1.service systemd-cryptsetup@luks\x2ddata2.service
 Before=zfs-mount.service
-ConditionPathExists=/dev/mapper/luks-extra
+ConditionPathExists=/dev/mapper/luks-data1
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/sh -c '\
-  zpool list $EXTRA_POOL >/dev/null 2>&1 && exit 0; \
-  for i in \$(seq 1 20); do \
-    zpool import -f -N -o cachefile=none $EXTRA_POOL 2>/dev/null && exit 0; \
+  zpool list dpool >/dev/null 2>&1 && exit 0; \
+  for i in $(seq 1 20); do \
+    zpool import -f -N -o cachefile=none dpool 2>/dev/null && exit 0; \
     sleep 1; \
   done; \
-  zpool import -f -N -o cachefile=none $EXTRA_POOL'
+  zpool import -f -N -o cachefile=none dpool'
 
 [Install]
 WantedBy=zfs-import.target
 EOS
-systemctl enable zfs-import-xpool.service
-fi
 
 systemctl enable \
-  zfs-import-bpool.service zfs-import-cache zfs-mount zfs-zed zfs.target \
+  zfs-import-bpool.service zfs-import-dpool.service \
+  zfs-import-cache zfs-mount zfs-zed zfs.target \
   ssh systemd-networkd systemd-resolved
 
 # SSH: password login on, root login off
@@ -551,6 +567,12 @@ PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 PermitRootLogin no
 EOS
+
+# Firewall
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw --force enable
 
 # initrd
 dracut -f --regenerate-all
@@ -563,13 +585,10 @@ grub-install \
   --target=x86_64-efi --efi-directory=/boot/efi \
   --bootloader-id=ubuntu --recheck --no-floppy
 
-# Mirror EFI to second disk
 rsync -a --delete /boot/efi/ /boot/efi2/
 
 cat > /usr/local/sbin/sync-efi <<'EOS'
 #!/bin/sh
-# Keep second EFI partition identical to the first.
-# Run after shim-signed / grub-efi-amd64-signed updates.
 mountpoint -q /boot/efi2 && rsync -a --delete /boot/efi/ /boot/efi2/
 EOS
 chmod +x /usr/local/sbin/sync-efi
@@ -609,10 +628,8 @@ chroot $T /usr/bin/env \
 
 rm -f $T/root/chroot-setup.sh
 
-# Restore systemd-resolved stub resolver symlink for the installed system
 ln -sf ../run/systemd/resolve/stub-resolv.conf $T/etc/resolv.conf
 
-# NVRAM entry for second disk
 efibootmgr -c -g -d "$(readlink -f "$DISK2")" -p 1 \
   -L "ubuntu (disk 2)" -l '\EFI\ubuntu\shimx64.efi' >/dev/null \
   || echo "!! could not add NVRAM entry for DISK2 — add manually in firmware if needed"
@@ -620,10 +637,6 @@ efibootmgr -c -g -d "$(readlink -f "$DISK2")" -p 1 \
 # ═════════════════════════ 11. enroll-tpm2 helper in target ═════════════════════════
 cat > $T/usr/local/sbin/enroll-tpm2 <<'EOS'
 #!/usr/bin/env bash
-# (Re-)enroll TPM2 auto-unlock for every LUKS device in /etc/crypttab.
-# Passphrase slot is never touched.
-# Usage: sudo enroll-tpm2 [PCRS]   (default 7)
-# Run after: first boot, firmware update, Secure Boot change, TPM clear, disk replacement.
 set -eu
 PCRS="${1:-7}"
 [[ -c /dev/tpmrm0 ]] || { echo "ERROR: no TPM2 device (/dev/tpmrm0)"; exit 1; }
@@ -637,10 +650,9 @@ echo "Done — TPM2 unlock active from next boot, passphrase remains as fallback
 EOS
 chmod +x $T/usr/local/sbin/enroll-tpm2
 
-# ═════════════════════════ 12. TEARDOWN (never fatal) ═════════════════════════
+# ═════════════════════════ 12. TEARDOWN ═════════════════════════
 echo "→ unmounting / exporting"
 
-# Kill any processes still rooted in the target (stray postinst daemons etc.)
 for p in /proc/[0-9]*; do
   pid=${p#/proc/}; [[ $pid == "$$" || ! -d /proc/$pid ]] && continue
   root=$(readlink /proc/$pid/root 2>/dev/null)
@@ -652,7 +664,6 @@ for p in /proc/[0-9]*; do
 done
 sync
 
-# Unmount from every mount namespace that still sees the target
 for p in $(grep -rl "$T" /proc/[0-9]*/mountinfo 2>/dev/null | cut -d/ -f3 | sort -u); do
   [[ -d /proc/$p ]] || continue
   if [[ $(readlink /proc/$p/ns/mnt 2>/dev/null) != $(readlink /proc/self/ns/mnt) ]]; then
@@ -676,7 +687,8 @@ done
   echo "  !! could not export: $(zpool list -H -o name 2>/dev/null | tr '\n' ' ')"
   echo "     NOT fatal — hostid was copied; pools import cleanly at first boot."; }
 
-for m in luks-root1 luks-root2 ${XP:+luks-extra}; do
+# ★ close all LUKS containers including data
+for m in luks-root1 luks-root2 luks-data1 luks-data2 ${XP:+luks-extra}; do
   cryptsetup close "$m" 2>/dev/null || true
 done
 
@@ -689,15 +701,20 @@ cat <<EOF
      && echo "should unlock via TPM2 — if passphrase prompt appears: type it, then  sudo enroll-tpm2 $TPM_PCRS" \
      || echo "type the LUKS passphrase, log in, then run:  sudo enroll-tpm2 $TPM_PCRS" )
  Login      : ssh $NEW_USER@<ip>   (password)
-              IP is shown on the console, or check your DHCP server / router.
  Verify TPM : sudo cryptsetup luksDump $RP1 | grep -A3 tpm2
  Re-enroll  : sudo enroll-tpm2 [PCRS]   — after firmware/Secure Boot changes or disk swap
  EFI sync   : sudo sync-efi            — after shim-signed/grub package updates
- Scrub      : sudo zpool scrub $RPOOL $BPOOL
- Pools      : $BPOOL (mirror, /boot)   $RPOOL (mirror on LUKS, /)$(
-   [[ -n $XP ]] && echo "   $EXTRA_POOL (SINGLE disk — no redundancy — $EXTRA_MNT)" )
+ Scrub      : sudo zpool scrub $RPOOL $BPOOL $DPOOL
+ Pools      : $BPOOL (mirror, /boot)
+              $RPOOL (mirror on LUKS, 64G, /)
+              $DPOOL (mirror on LUKS, ${DATA_MB}M, /home + /data)$(
+   [[ -n $XP ]] && echo "
+              $EXTRA_POOL (SINGLE disk — no redundancy — $EXTRA_MNT)" )
 
  KEEP THE PASSPHRASE OFFLINE.
  It is the only way in if the TPM refuses to unseal.
+
+ NOTE: If Secure Boot is on, you may see a MOK enrollment screen on first boot.
+       Follow the prompts to enroll the shim certificate.
 EOF
 hr
