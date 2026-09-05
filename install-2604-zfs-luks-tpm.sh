@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Ubuntu Server 26.04 LTS (resolute) — interactive installer  (rev. 8.1)
+#  Ubuntu Server 26.04 LTS (resolute) — interactive installer  (rev. 8.2)
 #  2-disk ZFS mirror · LUKS2 FDE · unlock by passphrase OR TPM2 · dracut · GRUB/UEFI
 #  SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select.
 #
 #  Boot the Ubuntu 26.04(.1) live ISO (Desktop "Try Ubuntu" or Server shell) → network up →
 #     sudo -i ; bash install-2604-zfs-luks-tpm.sh
 #  Safe to re-run at any point: releases target disks from mounts/pools/holders itself.
+#
+#  Tested on: HP ProDesk 400 G6 Desktop Mini PC
+#             NVMe (Toshiba KBG30ZMV256G 256 GB) + USB-NVMe (Realtek RTL9210B enclosure)
+#             Ubuntu 26.04 LTS · kernel 7.0.0-31-generic · TPM 2.0 (fTPM) · Secure Boot
 # =============================================================================
 set -eu
 # pipefail is deliberately NOT set: helpers pipe commands that legitimately return
@@ -15,7 +19,7 @@ set -eu
 SUITE=resolute
 MIRROR=http://archive.ubuntu.com/ubuntu
 EFI_MB=1024; BPOOL_MB=2048
-SWAP_MB=4096          # encrypted per disk, random key each boot — 0 to disable
+SWAP_MB=4096          # encrypted per disk, random key each boot
 RPOOL=rpool; BPOOL=bpool          # bpool name is mandatory for GRUB/ZFS
 T=/mnt
 
@@ -177,7 +181,7 @@ release_disks() {
   fi
   swapoff -a 2>/dev/null || true
 
-  # 2. unmount target tree from every mount namespace (live services have private namespaces)
+  # 2. unmount target tree from every mount namespace
   for p in $(grep -rl "$T" /proc/[0-9]*/mountinfo 2>/dev/null | cut -d/ -f3 | sort -u); do
     [[ -d /proc/$p ]] || continue
     if [[ $(readlink /proc/$p/ns/mnt 2>/dev/null) != $(readlink /proc/self/ns/mnt) ]]; then
@@ -373,6 +377,7 @@ mkdir -p $T/etc/zfs
 # Leave target cachefile EMPTY:
 #   rpool → imported by dracut from kernel cmdline (root=ZFS=…), not the cachefile
 #   bpool → imported by zfs-import-bpool.service, not zfs-import-cache
+#   xpool → imported by zfs-import-xpool.service, not zfs-import-cache
 # An empty cachefile means zfs-import-cache harmlessly does nothing.
 : > $T/etc/zfs/zpool.cache
 cp /etc/hostid $T/etc/hostid
@@ -483,9 +488,9 @@ sed -i 's|^GRUB_TIMEOUT_STYLE=.*|GRUB_TIMEOUT_STYLE=menu|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=3|' /etc/default/grub
 grep -q '^GRUB_TERMINAL' /etc/default/grub || echo 'GRUB_TERMINAL=console' >> /etc/default/grub
 
-# bpool import service (rev. 8.1):
-#   - idempotent: if bpool already imported (e.g. by zfs-import-scan), exit 0
-#   - otherwise wait up to 20 s for slow devices (USB enclosures) then force-import
+# bpool import service:
+#   - idempotent: if bpool already imported (e.g. by zfs-import-scan) exit 0
+#   - waits up to 20 s for slow devices (USB enclosures)
 #   - -f handles an unclean pool (power cut). Safe on a dedicated boot pool.
 cat > /etc/systemd/system/zfs-import-bpool.service <<'EOS'
 [Unit]
@@ -508,6 +513,33 @@ ExecStart=/bin/sh -c '\
 [Install]
 WantedBy=zfs-import.target
 EOS
+
+# extra pool import service (only if EXTRA_SPACE=pool was chosen)
+if [[ "$EXTRA_SPACE" == "pool" ]]; then
+cat > /etc/systemd/system/zfs-import-xpool.service <<EOS
+[Unit]
+Description=Import ZFS extra pool ($EXTRA_POOL)
+DefaultDependencies=no
+After=systemd-cryptsetup@luks\\x2dextra.service
+Before=zfs-mount.service
+ConditionPathExists=/dev/mapper/luks-extra
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\
+  zpool list $EXTRA_POOL >/dev/null 2>&1 && exit 0; \
+  for i in \$(seq 1 20); do \
+    zpool import -f -N -o cachefile=none $EXTRA_POOL 2>/dev/null && exit 0; \
+    sleep 1; \
+  done; \
+  zpool import -f -N -o cachefile=none $EXTRA_POOL'
+
+[Install]
+WantedBy=zfs-import.target
+EOS
+systemctl enable zfs-import-xpool.service
+fi
 
 systemctl enable \
   zfs-import-bpool.service zfs-import-cache zfs-mount zfs-zed zfs.target \
@@ -571,6 +603,8 @@ chroot $T /usr/bin/env \
   MIRROR="$MIRROR"             \
   RPOOL="$RPOOL"               \
   RD_LUKS="$RD_LUKS"          \
+  EXTRA_SPACE="$EXTRA_SPACE"   \
+  EXTRA_POOL="$EXTRA_POOL"     \
   bash /root/chroot-setup.sh
 
 rm -f $T/root/chroot-setup.sh
