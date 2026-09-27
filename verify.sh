@@ -485,12 +485,87 @@ fi
   || fail "/usr/local/sbin/enroll-tpm2 MISSING"
 
 # =============================================================================
+hdr "12b. SINGLE-DISK SURVIVABILITY"
+# =============================================================================
+
+if [[ -f /etc/crypttab ]]; then
+  for entry in luks-root1 luks-root2; do
+    line=$(grep "^$entry[[:space:]]" /etc/crypttab 2>/dev/null || true)
+    if [[ -n $line ]]; then
+      echo "$line" | grep -q 'nofail' \
+        && ok "crypttab: $entry has nofail" \
+        || fail "crypttab: $entry missing nofail (single-disk boot risk)"
+      echo "$line" | grep -q 'x-initrd.attach' \
+        && ok "crypttab: $entry has x-initrd.attach" \
+        || fail "crypttab: $entry missing x-initrd.attach (early root unlock risk)"
+    else
+      fail "crypttab: $entry MISSING"
+    fi
+  done
+
+  for entry in luks-data1 luks-data2; do
+    line=$(grep "^$entry[[:space:]]" /etc/crypttab 2>/dev/null || true)
+    if [[ -n $line ]]; then
+      echo "$line" | grep -q 'nofail' \
+        && ok "crypttab: $entry has nofail" \
+        || fail "crypttab: $entry missing nofail (may block degraded boot)"
+    else
+      fail "crypttab: $entry MISSING"
+    fi
+  done
+else
+  fail "/etc/crypttab NOT found"
+fi
+
+if [[ -f /etc/default/grub ]]; then
+  cmdline=$(grep '^GRUB_CMDLINE_LINUX=' /etc/default/grub | head -1)
+  for name in luks-root1 luks-root2; do
+    echo "$cmdline" | grep -q "=${name}" \
+      && ok "GRUB_CMDLINE_LINUX requires $name in initramfs" \
+      || fail "GRUB_CMDLINE_LINUX missing rd.luks.name for $name"
+  done
+
+  for name in luks-data1 luks-data2; do
+    echo "$cmdline" | grep -q "=${name}" \
+      && fail "GRUB_CMDLINE_LINUX still requires $name (can break one-disk boot)" \
+      || ok "GRUB_CMDLINE_LINUX does not hard-require $name"
+  done
+
+  echo "$cmdline" | grep -q 'rd.luks.options=.*nofail' \
+    && ok "GRUB_CMDLINE_LINUX has rd.luks.options=...nofail" \
+    || warn "GRUB_CMDLINE_LINUX missing rd.luks.options=...nofail"
+else
+  fail "/etc/default/grub NOT found"
+fi
+
+DPOOL_UNIT=/etc/systemd/system/zfs-import-dpool.service
+if [[ -f $DPOOL_UNIT ]]; then
+  ok "$DPOOL_UNIT exists"
+
+  grep -q '^After=systemd-cryptsetup.target' "$DPOOL_UNIT" \
+    && ok "dpool unit waits for systemd-cryptsetup.target" \
+    || fail "dpool unit missing After=systemd-cryptsetup.target"
+
+  grep -q '/dev/mapper/luks-data1' "$DPOOL_UNIT" && grep -q '/dev/mapper/luks-data2' "$DPOOL_UNIT" \
+    && ok "dpool unit checks for either luks-data1/luks-data2 mapper" \
+    || fail "dpool unit does not check both data mapper names"
+
+  if grep -q '^ConditionPathExists=/dev/mapper/luks-data1' "$DPOOL_UNIT"; then
+    fail "dpool unit has one-sided ConditionPathExists=luks-data1 (disk2-only boot risk)"
+  else
+    ok "dpool unit has no one-sided ConditionPathExists=luks-data1 gate"
+  fi
+else
+  fail "$DPOOL_UNIT NOT found"
+fi
+
+# =============================================================================
 hdr "13. SYSTEMD SERVICES"
 # =============================================================================
 
 EXPECTED_SERVICES=(
   zfs-import-bpool.service  zfs-import-dpool.service
-  zfs-import-cache.service  zfs-mount.service
+  zfs-mount.service
   zfs-zed.service           zfs.target
   ssh.service               systemd-networkd.service
   systemd-resolved.service  ufw.service
@@ -513,6 +588,16 @@ for svc in "${EXPECTED_SERVICES[@]}"; do
       warn "Service $svc: enabled=$enabled active=$active" ;;
   esac
   [[ $active == failed ]] && fail "  $svc is in FAILED state — check: journalctl -u $svc"
+done
+
+for svc in zfs-import-cache.service zfs-import-scan.service; do
+  st=$(systemctl is-enabled "$svc" 2>/dev/null || true)
+  case "$st" in
+    disabled|masked|static|indirect|"") ok "Service $svc not enabled ($st)" ;;
+    not-found) ok "Service $svc not installed" ;;
+    enabled) warn "Service $svc is enabled (mixed import strategy)" ;;
+    *) warn "Service $svc state: $st" ;;
+  esac
 done
 
 # =============================================================================

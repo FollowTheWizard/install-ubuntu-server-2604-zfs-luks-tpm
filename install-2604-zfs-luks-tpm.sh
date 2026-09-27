@@ -18,7 +18,7 @@ set -eu
 # non-zero ("nothing found") into tr/head; pipefail + set -e kills the script silently.
 
 SUITE=resolute
-MIRROR=http://archive.ubuntu.com/ubuntu
+MIRROR=https://archive.ubuntu.com/ubuntu
 EFI_MB=1024; BPOOL_MB=2048
 SWAP_MB=4096          # encrypted per disk, random key each boot
 ROOT_MB=65536         # ★ FIXED 64 GiB for OS
@@ -37,6 +37,27 @@ ask_secret() {
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo -i)"
 [[ -d /sys/firmware/efi ]] || die "not booted in UEFI mode — enable UEFI and Secure Boot in firmware"
+
+secure_boot_enabled() {
+  local f sb
+  for f in /sys/firmware/efi/efivars/SecureBoot-*; do
+    [[ -e $f ]] || continue
+    sb=$(od -An -t u1 -j4 -N1 "$f" 2>/dev/null | tr -d '[:space:]' || true)
+    [[ $sb == 1 ]] && return 0
+    [[ $sb == 0 ]] && return 1
+  done
+  if command -v mokutil >/dev/null 2>&1; then
+    mokutil --sb-state 2>/dev/null | grep -qi 'enabled' && return 0 || return 1
+  fi
+  return 2
+}
+
+if ! secure_boot_enabled; then
+  rc=$?
+  (( rc == 2 )) && die "cannot verify Secure Boot state (no efivar and no mokutil)"
+  die "Secure Boot is disabled — enable it in firmware (required for TPM PCR policy)"
+fi
+
 HAVE_TPM=no; [[ -c /dev/tpmrm0 ]] && HAVE_TPM=yes
 
 # ═════════════════════════ 1. DISK SELECTION ═════════════════════════
@@ -393,7 +414,7 @@ fi
 # ═════════════════════════ 8. DEBOOTSTRAP ═════════════════════════
 echo "→ debootstrap $SUITE"
 [[ -e /usr/share/debootstrap/scripts/$SUITE ]] \
-  || ln -s gutsy /usr/share/debootstrap/scripts/$SUITE
+  || die "debootstrap suite '$SUITE' not supported by this live environment"
 debootstrap --arch=amd64 "$SUITE" $T "$MIRROR"
 
 mkdir -p $T/etc/zfs
@@ -431,10 +452,10 @@ EOF
 # dpool/home and dpool/data use ZFS-native mountpoints — no fstab needed.
 
 cat > $T/etc/crypttab <<EOF
-luks-root1  UUID=$U_RP1       none          luks,discard,tpm2-device=auto
-luks-root2  UUID=$U_RP2       none          luks,discard,tpm2-device=auto
-luks-data1  UUID=$U_DP1       none          luks,discard,tpm2-device=auto
-luks-data2  UUID=$U_DP2       none          luks,discard,tpm2-device=auto
+luks-root1  UUID=$U_RP1       none          luks,discard,tpm2-device=auto,x-initrd.attach,nofail
+luks-root2  UUID=$U_RP2       none          luks,discard,tpm2-device=auto,x-initrd.attach,nofail
+luks-data1  UUID=$U_DP1       none          luks,discard,tpm2-device=auto,nofail
+luks-data2  UUID=$U_DP2       none          luks,discard,tpm2-device=auto,nofail
 swap1       PARTUUID=$PU_SW1  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail
 swap2       PARTUUID=$PU_SW2  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail
 EOF
@@ -442,10 +463,9 @@ EOF
   "luks-extra  UUID=$(cryptsetup luksUUID "$XP")  none  luks,discard,tpm2-device=auto,nofail" \
   >> $T/etc/crypttab
 
-# ★ dracut kernel cmdline — must unlock all 4 LUKS containers before ZFS import
+# dracut kernel cmdline — unlock rpool members in initramfs; data pool unlock happens later
 RD_LUKS="rd.luks.name=$U_RP1=luks-root1 rd.luks.name=$U_RP2=luks-root2"
-RD_LUKS+=" rd.luks.name=$U_DP1=luks-data1 rd.luks.name=$U_DP2=luks-data2"
-RD_LUKS+=" rd.luks.options=discard,tpm2-device=auto"
+RD_LUKS+=" rd.luks.options=discard,tpm2-device=auto,nofail"
 
 # ═════════════════════════ 10. CHROOT ═════════════════════════
 for fs in dev proc sys; do mount --rbind /$fs $T/$fs; mount --make-rslave $T/$fs; done
@@ -537,15 +557,15 @@ cat > /etc/systemd/system/zfs-import-dpool.service <<'EOS'
 [Unit]
 Description=Import ZFS data pool (dpool)
 DefaultDependencies=no
-After=systemd-cryptsetup@luks\x2ddata1.service systemd-cryptsetup@luks\x2ddata2.service
+After=systemd-cryptsetup.target
 Before=zfs-mount.service
-ConditionPathExists=/dev/mapper/luks-data1
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/sh -c '\
   zpool list dpool >/dev/null 2>&1 && exit 0; \
+  [ -e /dev/mapper/luks-data1 ] || [ -e /dev/mapper/luks-data2 ] || exit 0; \
   for i in $(seq 1 20); do \
     zpool import -f -N -o cachefile=none dpool 2>/dev/null && exit 0; \
     sleep 1; \
@@ -556,9 +576,11 @@ ExecStart=/bin/sh -c '\
 WantedBy=zfs-import.target
 EOS
 
+systemctl disable zfs-import-cache.service zfs-import-scan.service 2>/dev/null || true
+
 systemctl enable \
   zfs-import-bpool.service zfs-import-dpool.service \
-  zfs-import-cache zfs-mount zfs-zed zfs.target \
+  zfs-mount zfs-zed zfs.target \
   ssh systemd-networkd systemd-resolved
 
 # SSH: password login on, root login off
@@ -584,6 +606,10 @@ update-grub
 grub-install \
   --target=x86_64-efi --efi-directory=/boot/efi \
   --bootloader-id=ubuntu --recheck --no-floppy
+
+grub-install \
+  --target=x86_64-efi --efi-directory=/boot/efi2 \
+  --bootloader-id=ubuntu --recheck --no-floppy --no-nvram
 
 rsync -a --delete /boot/efi/ /boot/efi2/
 

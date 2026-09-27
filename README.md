@@ -62,11 +62,11 @@ method, adapted for Ubuntu 26.04's dracut initrd and `sudo-rs`.
   on the larger disk becomes its own LUKS+TPM encrypted, unmirrored pool — or is left
   unused — your choice.
 - **Encrypted swap** (4 GiB per disk) with a fresh random key every boot.
-- **Redundant EFI**: GRUB/shim installed on both disks, second ESP synced, NVRAM entries
-  for both disks.
+- **Redundant EFI**: GRUB/shim installed directly to both ESPs, second ESP synced, NVRAM
+  entries for both disks.
 - **Ubuntu 26.04-native**: dracut initrd, `sudo-rs`, deb822 apt sources,
   `systemd-networkd` / netplan, `systemd-resolved`.
-- **Secure Boot compatible** (signed shim + GRUB from Ubuntu's repositories).
+- **Secure Boot required and enforced** (signed shim + GRUB from Ubuntu's repositories).
 - **SSH** enabled with password login on first boot; root login disabled.
 - **Safe to re-run**: `release_disks` tears down any mounts, pools, LUKS/dm/md/LVM
   holders and stale signatures before partitioning — works on a previously-used or
@@ -143,9 +143,9 @@ Nothing else — the script installs all tools it needs into the live environmen
 # 1. Boot Ubuntu 26.04.1 live ISO in UEFI mode with Secure Boot ON.
 #    Connect to the network.
 
-# 2. Verify preconditions (optional but recommended)
-mokutil --sb-state          # → "SecureBoot enabled"
-ls /dev/tpmrm0              # → exists if TPM 2.0 is usable
+# 2. Verify preconditions (recommended; installer also checks)
+mokutil --sb-state          # must show "SecureBoot enabled"
+ls /dev/tpmrm0              # exists if TPM 2.0 is usable
 
 # 3. Get the script (USB stick, scp, or paste into nano)
 curl -LO https://raw.githubusercontent.com/<you>/<repo>/main/install-2604-zfs-luks-tpm.sh
@@ -317,19 +317,23 @@ systemctl --failed              # should be empty
   `bpool` is mandatory for Ubuntu's GRUB scripts.
 - **Empty `/etc/zfs/zpool.cache` on the installed system.** `rpool` is imported by
   dracut from the kernel cmdline (`root=ZFS=…`), `bpool` by a dedicated systemd service,
-  and `xpool` by its own service after LUKS opens. An empty cachefile means
-  `zfs-import-cache` harmlessly does nothing and cannot race with these services.
+  and `dpool` by its own service after cryptsetup. The installer disables
+  `zfs-import-cache.service` and `zfs-import-scan.service` to avoid mixed import
+  strategies and ordering races.
 - **`-f` on bpool/xpool import.** Handles an unclean pool from a power cut or the
   live-session teardown race. Safe on a dedicated pool that cannot be simultaneously
   imported on another host.
-- **`rd.luks.name=` on the kernel command line.** Fixes `/dev/mapper` names in the
-  initrd independent of crypttab, so `zpool` device paths always match.
+- **`rd.luks.name=` only for root vdevs on the kernel command line.** This fixes
+  initrd `/dev/mapper` names for `rpool` while avoiding hard requirements on data vdevs,
+  improving one-disk degraded boot behavior.
 - **Random-key swap.** No hibernation on a 24/7 server. No TPM slot to manage.
 - **`/dev/disk/by-id` everywhere.** Pool members and partition references survive
   controller reordering.
 - **`sudo-rs`** is the 26.04 default sudo provider.
 - **dracut `hostonly="no"`** for the install. Host-only detection is unreliable in a
   chroot. Switch to `hostonly="yes"` later if you want a smaller initrd.
+- **No debootstrap suite fallback symlink.** If the selected suite script is missing,
+  the installer fails fast instead of silently bootstrapping with a mismatched release.
 - **`pipefail` deliberately omitted.** Several helpers pipe commands that return non-zero
   when "nothing found" (findmnt, grep) into `tr`/`head`. Under `pipefail` + `set -e`
   this kills the script silently with no error message.
@@ -390,8 +394,15 @@ sudo zpool replace rpool <old-guid> /dev/mapper/luks-rootN
 
 # 5. Update crypttab + kernel cmdline with the new UUID
 NEWUUID=$(sudo cryptsetup luksUUID /dev/disk/by-id/NEW-part4)
-sudo sed -i "s|^luks-rootN .*|luks-rootN UUID=$NEWUUID none luks,discard,tpm2-device=auto|" /etc/crypttab
+sudo sed -i "s|^luks-rootN .*|luks-rootN UUID=$NEWUUID none luks,discard,tpm2-device=auto,x-initrd.attach,nofail|" /etc/crypttab
 sudo sed -i "s|rd.luks.name=[^ ]*=luks-rootN|rd.luks.name=$NEWUUID=luks-rootN|" /etc/default/grub
+
+# If dpool exists, replace its member too (part5)
+# sudo cryptsetup luksFormat --type luks2 --pbkdf argon2id /dev/disk/by-id/NEW-part5
+# sudo cryptsetup open --allow-discards --persistent /dev/disk/by-id/NEW-part5 luks-dataN
+# sudo zpool replace dpool <old-guid> /dev/mapper/luks-dataN
+# NEWUUID_DATA=$(sudo cryptsetup luksUUID /dev/disk/by-id/NEW-part5)
+# sudo sed -i "s|^luks-dataN .*|luks-dataN UUID=$NEWUUID_DATA none luks,discard,tpm2-device=auto,nofail|" /etc/crypttab
 
 # 6. Enroll TPM, rebuild initrd + grub, sync EFI
 sudo enroll-tpm2
