@@ -38,6 +38,21 @@ EOF
 
 ACTION="$1"
 
+require_cmd() {
+    local c
+    for c in "$@"; do
+        command -v "$c" >/dev/null 2>&1 || {
+            echo "Required command not found: $c"
+            exit 1
+        }
+    done
+}
+
+samba_user_exists() {
+    local user="$1"
+    pdbedit -L 2>/dev/null | cut -d: -f1 | grep -qx "$user"
+}
+
 ###############################################################################
 # Validate username
 ###############################################################################
@@ -75,7 +90,7 @@ add_user() {
     fi
 
     if ! getent group sambashare >/dev/null; then
-        groupadd sambashare
+        groupadd -f sambashare
     fi
 
     usermod -aG sambashare "$user"
@@ -101,7 +116,7 @@ remove_user() {
 
     validate_user "$user"
 
-    if pdbedit -L | cut -d: -f1 | grep -qx "$user"; then
+    if samba_user_exists "$user"; then
         smbpasswd -x "$user"
     else
         echo "User '$user' is not a Samba user."
@@ -129,6 +144,9 @@ change_password() {
     id "$user" >/dev/null 2>&1 ||
         { echo "Linux user '$user' does not exist."; exit 1; }
 
+    samba_user_exists "$user" ||
+        { echo "Samba user '$user' does not exist. Use: $0 add $user"; exit 1; }
+
     smbpasswd "$user"
 }
 
@@ -141,6 +159,10 @@ disable_user() {
     local user="$1"
 
     validate_user "$user"
+
+    samba_user_exists "$user" ||
+        { echo "Samba user '$user' does not exist."; exit 1; }
+
     smbpasswd -d "$user"
 }
 
@@ -153,6 +175,10 @@ enable_user() {
     local user="$1"
 
     validate_user "$user"
+
+    samba_user_exists "$user" ||
+        { echo "Samba user '$user' does not exist."; exit 1; }
+
     smbpasswd -e "$user"
 }
 
@@ -179,31 +205,37 @@ case "$ACTION" in
 
     add)
         [[ $# -eq 2 ]] || usage
+        require_cmd id getent adduser groupadd usermod smbpasswd pdbedit
         add_user "$2"
         ;;
 
     remove)
         [[ $# -eq 2 ]] || usage
+        require_cmd id gpasswd smbpasswd pdbedit
         remove_user "$2"
         ;;
 
     passwd)
         [[ $# -eq 2 ]] || usage
+        require_cmd id smbpasswd pdbedit
         change_password "$2"
         ;;
 
     disable)
         [[ $# -eq 2 ]] || usage
+        require_cmd smbpasswd pdbedit
         disable_user "$2"
         ;;
 
     enable)
         [[ $# -eq 2 ]] || usage
+        require_cmd smbpasswd pdbedit
         enable_user "$2"
         ;;
 
     list)
         [[ $# -eq 1 ]] || usage
+        require_cmd pdbedit grep
         list_users
         ;;
 
