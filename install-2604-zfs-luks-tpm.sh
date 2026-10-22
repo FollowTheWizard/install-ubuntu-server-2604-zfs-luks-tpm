@@ -52,7 +52,9 @@ secure_boot_enabled() {
   return 2
 }
 
-if ! secure_boot_enabled; then
+if secure_boot_enabled; then
+  :
+else
   rc=$?
   (( rc == 2 )) && die "cannot verify Secure Boot state (no efivar and no mokutil)"
   die "Secure Boot is disabled — enable it in firmware (required for TPM PCR policy)"
@@ -444,7 +446,7 @@ cat > $T/etc/fstab <<EOF
 $BPOOL/BOOT/ubuntu  /boot       zfs   nodev,relatime,x-systemd.requires=zfs-import-bpool.service  0 0
 $RPOOL/var/log      /var/log    zfs   nodev,relatime  0 0
 $RPOOL/var/spool    /var/spool  zfs   nodev,relatime  0 0
-PARTUUID=$PU_ESP1   /boot/efi   vfat  umask=0077,x-systemd.requires-mounts-for=/boot  0 1
+PARTUUID=$PU_ESP1   /boot/efi   vfat  umask=0077,nofail,x-systemd.requires-mounts-for=/boot  0 1
 PARTUUID=$PU_ESP2   /boot/efi2  vfat  umask=0077,nofail,x-systemd.requires-mounts-for=/boot  0 1
 /dev/mapper/swap1   none        swap  sw,nofail  0 0
 /dev/mapper/swap2   none        swap  sw,nofail  0 0
@@ -558,6 +560,7 @@ cat > /etc/systemd/system/zfs-import-dpool.service <<'EOS'
 Description=Import ZFS data pool (dpool)
 DefaultDependencies=no
 After=systemd-cryptsetup.target
+Before=zfs-import-scan.service
 Before=zfs-mount.service
 
 [Service]
@@ -576,10 +579,11 @@ ExecStart=/bin/sh -c '\
 WantedBy=zfs-import.target
 EOS
 
-systemctl disable zfs-import-cache.service zfs-import-scan.service 2>/dev/null || true
+systemctl disable zfs-import-cache.service 2>/dev/null || true
 
 systemctl enable \
   zfs-import-bpool.service zfs-import-dpool.service \
+  zfs-import-scan.service \
   zfs-mount zfs-zed zfs.target \
   ssh systemd-networkd systemd-resolved
 
@@ -658,7 +662,7 @@ ln -sf ../run/systemd/resolve/stub-resolv.conf $T/etc/resolv.conf
 
 efibootmgr -c -g -d "$(readlink -f "$DISK2")" -p 1 \
   -L "ubuntu (disk 2)" -l '\EFI\ubuntu\shimx64.efi' >/dev/null \
-  || echo "!! could not add NVRAM entry for DISK2 — add manually in firmware if needed"
+  || die "could not add NVRAM entry for DISK2; redundant boot is not configured"
 
 # ═════════════════════════ 11. enroll-tpm2 helper in target ═════════════════════════
 cat > $T/usr/local/sbin/enroll-tpm2 <<'EOS'

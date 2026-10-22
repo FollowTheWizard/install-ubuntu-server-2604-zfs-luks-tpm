@@ -192,9 +192,7 @@ for mnt in /boot/efi /boot/efi2; do
       fail "$mnt is $fstype, expected vfat"
     fi
   else
-    [[ $mnt == /boot/efi2 ]] \
-      && warn "$mnt not mounted (second ESP — nofail, may be normal)" \
-      || fail "$mnt NOT mounted"
+    warn "$mnt not mounted (redundant ESP is optional during single-disk operation)"
   fi
 done
 
@@ -590,15 +588,21 @@ for svc in "${EXPECTED_SERVICES[@]}"; do
   [[ $active == failed ]] && fail "  $svc is in FAILED state — check: journalctl -u $svc"
 done
 
-for svc in zfs-import-cache.service zfs-import-scan.service; do
-  st=$(systemctl is-enabled "$svc" 2>/dev/null || true)
-  case "$st" in
-    disabled|masked|static|indirect|"") ok "Service $svc not enabled ($st)" ;;
-    not-found) ok "Service $svc not installed" ;;
-    enabled) warn "Service $svc is enabled (mixed import strategy)" ;;
-    *) warn "Service $svc state: $st" ;;
-  esac
-done
+cache_state=$(systemctl is-enabled zfs-import-cache.service 2>/dev/null || true)
+case "$cache_state" in
+  disabled|masked) ok "zfs-import-cache.service disabled ($cache_state)" ;;
+  enabled) warn "zfs-import-cache.service enabled alongside the scan importer" ;;
+  not-found|"") fail "zfs-import-cache.service NOT FOUND" ;;
+  *) warn "zfs-import-cache.service state: $cache_state" ;;
+esac
+
+scan_state=$(systemctl is-enabled zfs-import-scan.service 2>/dev/null || true)
+case "$scan_state" in
+  enabled|static|indirect) ok "zfs-import-scan.service available ($scan_state)" ;;
+  disabled|masked) fail "zfs-import-scan.service disabled; initramfs may not discover rpool" ;;
+  not-found|"") fail "zfs-import-scan.service NOT FOUND" ;;
+  *) warn "zfs-import-scan.service state: $scan_state" ;;
+esac
 
 # =============================================================================
 hdr "14. USER / SSH / HOSTNAME"

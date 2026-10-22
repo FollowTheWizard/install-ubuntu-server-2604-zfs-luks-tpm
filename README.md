@@ -323,11 +323,12 @@ systemctl --failed              # should be empty
 - **Separate `bpool`.** GRUB understands only a subset of ZFS features. `bpool` is
   created with `compatibility=grub2` so `rpool` can use all modern features. The name
   `bpool` is mandatory for Ubuntu's GRUB scripts.
-- **Empty `/etc/zfs/zpool.cache` on the installed system.** `rpool` is imported by
-  dracut from the kernel cmdline (`root=ZFS=…`), `bpool` by a dedicated systemd service,
-  and `dpool` by its own service after cryptsetup. The installer disables
-  `zfs-import-cache.service` and `zfs-import-scan.service` to avoid mixed import
-  strategies and ordering races.
+- **Empty `/etc/zfs/zpool.cache` on the installed system.** `rpool` is discovered
+  by the ZFS scan importer in the initramfs for `root=ZFS=…`; keep
+  `zfs-import-scan.service` enabled so the root pool can be found before `/` mounts.
+  The custom `bpool` and `dpool` import services run before the scan importer and are
+  idempotent. The installer disables `zfs-import-cache.service` because the cache is
+  intentionally empty.
 - **`-f` on bpool/xpool import.** Handles an unclean pool from a power cut or the
   live-session teardown race. Safe on a dedicated pool that cannot be simultaneously
   imported on another host.
