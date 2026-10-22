@@ -142,13 +142,14 @@ Nothing else — the script installs all tools it needs into the live environmen
 ```bash
 # 1. Boot Ubuntu 26.04.1 live ISO in UEFI mode with Secure Boot ON.
 #    Connect to the network.
+#    For SSH access to the live session, find the SSH key under Help in the live boot.
 
 # 2. Verify preconditions (recommended; installer also checks)
 mokutil --sb-state          # must show "SecureBoot enabled"
 ls /dev/tpmrm0              # exists if TPM 2.0 is usable
 
-# 3. Get the script (USB stick, scp, or paste into nano)
-curl -LO https://raw.githubusercontent.com/<you>/<repo>/main/install-2604-zfs-luks-tpm.sh
+# 3. Download the installer
+curl -fLO https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-2604-zfs-luks-tpm.sh
 
 # 4. Run as root
 sudo -i
@@ -157,6 +158,13 @@ bash install-2604-zfs-luks-tpm.sh
 # 5. Answer the prompts, type YES at the summary, set your passphrase.
 #    Takes 10-20 minutes depending on your internet connection.
 #    Remove the live medium when done and reboot.
+
+# 6. Connect over SSH after the installed system has booted.
+#    On the server console, find its LAN IP:
+ip -br addr
+#    From another computer on the same network (replace <server-ip>):
+ssh admin@<server-ip>
+#    Enter the admin password you set during installation.
 ```
 
 ---
