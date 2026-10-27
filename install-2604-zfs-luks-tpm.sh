@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Ubuntu 26.04 LTS (resolute) — interactive installer  (rev. 9.0)
+#  Ubuntu 26.04 LTS (resolute) — interactive installer  (rev. 9.0-p1, patched)
 #  2-disk ZFS mirror · LUKS2 FDE · unlock by passphrase OR TPM2 · dracut · GRUB/UEFI
 #  LAYOUT: 64 GiB OS (rpool) + remaining data (dpool), both mirrored on LUKS2
 #  SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select.
+#
+#  PATCHED COPY (p1) of FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm rev. 9.0
+#  (original script header says MIT; keep the original license notice when redistributing).
+#  Changes vs. rev. 9.0 — NOT tested on hardware:
+#   1. ufw: rules are only WRITTEN in the chroot; `ufw enable` is no longer run there
+#      (it talks to the live kernel and, under set -e, could abort before dracut/GRUB).
+#      Enabled via ENABLED=yes + ufw.service at first boot; skipped with a warning if the
+#      SSH rule could not be written (never enables deny-all without the SSH rule).
+#   2. zfs-import-dpool.service: After=cryptsetup.target (systemd-cryptsetup.target does
+#      not exist); safe against a race with zfs-import-scan.service.
+#   3. disk-2 NVRAM entry: stale "ubuntu (disk 2)" entries removed, failure is no longer
+#      fatal (it used to abort before enroll-tpm2 was written and before teardown);
+#      a warning with the manual command is printed at the end instead.
 #
 #  Boot the Ubuntu 26.04(.1) live ISO (Desktop "Try Ubuntu" or Server shell) → network up →
 #     sudo -i ; bash install-2604-zfs-luks-tpm.sh
@@ -559,7 +572,7 @@ cat > /etc/systemd/system/zfs-import-dpool.service <<'EOS'
 [Unit]
 Description=Import ZFS data pool (dpool)
 DefaultDependencies=no
-After=systemd-cryptsetup.target
+After=cryptsetup.target
 Before=zfs-import-scan.service
 Before=zfs-mount.service
 
@@ -571,9 +584,10 @@ ExecStart=/bin/sh -c '\
   [ -e /dev/mapper/luks-data1 ] || [ -e /dev/mapper/luks-data2 ] || exit 0; \
   for i in $(seq 1 20); do \
     zpool import -f -N -o cachefile=none dpool 2>/dev/null && exit 0; \
+    zpool list dpool >/dev/null 2>&1 && exit 0; \
     sleep 1; \
   done; \
-  zpool import -f -N -o cachefile=none dpool'
+  zpool list dpool >/dev/null 2>&1 || zpool import -f -N -o cachefile=none dpool'
 
 [Install]
 WantedBy=zfs-import.target
@@ -594,11 +608,19 @@ KbdInteractiveAuthentication yes
 PermitRootLogin no
 EOS
 
-# Firewall
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-ufw --force enable
+# Firewall: only WRITE the rules here. `ufw enable` inside a chroot talks to the LIVE
+# kernel (module mismatch, and set -e would abort before dracut/GRUB). ufw.service
+# loads the rules at first boot once ENABLED=yes. If the SSH rule cannot be written,
+# the firewall stays off rather than being enabled as deny-all without SSH.
+if ufw default deny incoming >/dev/null \
+   && ufw default allow outgoing >/dev/null \
+   && ufw allow 22/tcp >/dev/null \
+   && grep -Eq 'allow (tcp|any) 22 ' /etc/ufw/user.rules; then
+  sed -i 's/^ENABLED=.*/ENABLED=yes/' /etc/ufw/ufw.conf
+  systemctl enable ufw
+else
+  echo "WARNING: could not write ufw rules - firewall NOT enabled (set it up after first boot)"
+fi
 
 # initrd
 dracut -f --regenerate-all
@@ -660,9 +682,15 @@ rm -f $T/root/chroot-setup.sh
 
 ln -sf ../run/systemd/resolve/stub-resolv.conf $T/etc/resolv.conf
 
+# NVRAM boot entry for disk 2. Non-fatal: the install itself is complete at this point;
+# a failure is reported at the end. Stale entries from earlier runs point at the old
+# partition GUID and are removed first.
+EFI2_OK=yes
+for n in $(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} *ubuntu (disk 2).*/\1/p'); do
+  efibootmgr -B -b "$n" >/dev/null 2>&1 || true
+done
 efibootmgr -c -g -d "$(readlink -f "$DISK2")" -p 1 \
-  -L "ubuntu (disk 2)" -l '\EFI\ubuntu\shimx64.efi' >/dev/null \
-  || die "could not add NVRAM entry for DISK2; redundant boot is not configured"
+  -L "ubuntu (disk 2)" -l '\EFI\ubuntu\shimx64.efi' >/dev/null 2>&1 || EFI2_OK=no
 
 # ═════════════════════════ 11. enroll-tpm2 helper in target ═════════════════════════
 cat > $T/usr/local/sbin/enroll-tpm2 <<'EOS'
@@ -743,6 +771,12 @@ cat <<EOF
 
  KEEP THE PASSPHRASE OFFLINE.
  It is the only way in if the TPM refuses to unseal.
+$(
+  if [[ $EFI2_OK == no ]]; then
+    echo " !! WARNING: NVRAM boot entry for disk 2 could NOT be created."
+    echo "    The mirror still boots from disk 1; for redundant boot run after first boot:"
+    echo "    sudo efibootmgr -c -g -d $(readlink -f "$DISK2") -p 1 -L 'ubuntu (disk 2)' -l '\\EFI\\ubuntu\\shimx64.efi'"
+  fi )
 
  NOTE: If Secure Boot is on, you may see a MOK enrollment screen on first boot.
        Follow the prompts to enroll the shim certificate.
