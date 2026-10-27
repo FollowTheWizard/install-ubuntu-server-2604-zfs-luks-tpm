@@ -1,562 +1,209 @@
-# Ubuntu Server 26.04 LTS — ZFS Mirror + LUKS2 FDE + TPM2 Unlock
+# Ubuntu Server 26.04 LTS – ZFS-Mirror + LUKS2 + TPM2-Unlock (rev. 9.0-p1)
 
-An interactive, single-file installer script that puts **Ubuntu Server 26.04 LTS
-(Resolute Raccoon)** on **two disks** as a **ZFS mirror**, with **full-disk encryption
-(LUKS2)** underneath ZFS, unlocked at boot **either by passphrase or automatically by
-the TPM 2.0 chip**.
+Interaktives Ein-Datei-Installationsscript: Ubuntu Server 26.04 LTS („resolute“) auf **zwei Platten** als **ZFS-Mirror**, darunter **LUKS2-Vollverschlüsselung**. Entsperrt wird beim Boot **automatisch per TPM 2.0** oder per **Passphrase** als Fallback.
 
-> ✅ **Tested on real hardware** — HP ProDesk 400 G6 Desktop Mini PC,
-> NVMe (Toshiba KBG30ZMV256G 256 GB) + USB-NVMe (Realtek RTL9210B enclosure),
-> Ubuntu 26.04 LTS, kernel 7.0.0-31-generic, fTPM 2.0, Secure Boot.
-> 0 failed units, 0 journal errors. All pools, datasets, swap, SSH, TPM
-> unlock and dual EFI verified working.
+Dies ist eine **gepatchte Kopie** von
+`FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm` (rev. 9.0). Siehe [Änderungen](#änderungen-gegenüber-rev-90).
+
+> ⚠️ **Nicht auf Hardware getestet.** Der Upstream-Test (HP ProDesk 400 G6, 256-GB-NVMe + USB-NVMe) bezog sich auf das ältere Layout rev. 8.2. Das hier verwendete Layout (rev. 9.0) und meine Patches sind ungetestet. Das Script **löscht beide gewählten Platten komplett**. Daten vorher sichern, Script lesen, Wiederherstellung testen, bevor wichtige Daten darauf liegen.
 
 ---
 
-## Table of contents
+## Voraussetzungen
 
-- [Why this script exists](#why-this-script-exists)
-- [Features](#features)
-- [What you get](#what-you-get)
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [What the script asks](#what-the-script-asks)
-- [Disk layout](#disk-layout)
-- [Boot chain](#boot-chain)
-- [Different-sized disks](#different-sized-disks)
-- [After the first boot](#after-the-first-boot)
-- [Security model](#security-model)
-- [Design decisions](#design-decisions)
-- [Known limitations](#known-limitations)
-- [Maintenance](#maintenance)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
-
----
-
-## Why this script exists
-
-The stock Ubuntu installer cannot do this combination:
-
-- The **Server installer** has no ZFS option at all.
-- The **Desktop installer**'s ZFS layout is single-disk only.
-- Canonical's **TPM-backed FDE** is a snap-based system that does not combine with ZFS
-  mirrors, requires the kernel in a snap (breaking some binary drivers), and can only be
-  enabled at install time.
-
-The result is a manual `debootstrap`-based install following the OpenZFS Root-on-ZFS
-method, adapted for Ubuntu 26.04's dracut initrd and `sudo-rs`.
-
----
-
-## Features
-
-- **Fully interactive** — no variables to edit. A numbered disk picker, system prompts,
-  and a full summary are shown before anything is written to disk.
-- **Two-disk ZFS mirror** for `/` (`rpool`) and `/boot` (`bpool`).
-- **LUKS2 full-disk encryption** (AES-256-XTS, argon2id KDF) under every ZFS vdev.
-- **Two unlock methods** on every LUKS device: your passphrase *and* a TPM2-sealed key
-  (`systemd-cryptenroll`). Normal boots are hands-free; the passphrase is the fallback.
-- **Different-sized disks handled**: the mirror uses the smaller disk's size; the leftover
-  on the larger disk becomes its own LUKS+TPM encrypted, unmirrored pool — or is left
-  unused — your choice.
-- **Encrypted swap** (4 GiB per disk) with a fresh random key every boot.
-- **Redundant EFI**: GRUB/shim installed directly to both ESPs, second ESP synced, NVRAM
-  entries for both disks.
-- **Ubuntu 26.04-native**: dracut initrd, `sudo-rs`, deb822 apt sources,
-  `systemd-networkd` / netplan, `systemd-resolved`.
-- **Secure Boot required and enforced** (signed shim + GRUB from Ubuntu's repositories).
-- **SSH** enabled with password login on first boot; root login disabled.
-- **Safe to re-run**: `release_disks` tears down any mounts, pools, LUKS/dm/md/LVM
-  holders and stale signatures before partitioning — works on a previously-used or
-  partially-installed system.
-- Ships two helper commands in the installed system: `enroll-tpm2` and `sync-efi`.
-
----
-
-## What you get
-
-```
-                    ┌──────────────┐        ┌──────────────┐
-                    │    DISK 1    │        │    DISK 2    │
-                    ├──────────────┤        ├──────────────┤
-  /boot/efi  ◄──────┤ 1  ESP  1G   │  sync  │ 1  ESP  1G   ├──────► /boot/efi2
-                    ├──────────────┤        ├──────────────┤
-  bpool (mirror) ◄──┤ 2  ZFS  2G   │◄──────►│ 2  ZFS  2G   │        /boot
-                    ├──────────────┤        ├──────────────┤
-  swap1 (random) ◄──┤ 3  swap 4G   │        │ 3  swap 4G   ├──────► swap2
-                    ├──────────────┤        ├──────────────┤
-                    │ 4  LUKS2     │        │ 4  LUKS2     │
-  rpool (mirror) ◄──┤   luks-root1 │◄──────►│   luks-root2 ├──────► /  /home  /var …
-                    │   pass+TPM   │        │   pass+TPM   │
-                    ├──────────────┤        └──────────────┘
-                    │ 5  LUKS2     │  (only on the larger disk, if disks differ)
-  xpool (single) ◄──┤   luks-extra │──────► /data
-                    │   pass+TPM   │
-                    └──────────────┘
-```
-
-**ZFS datasets:**
-
-| Dataset | Mountpoint |
+| Punkt | Anforderung |
 |---|---|
-| `bpool/BOOT/ubuntu` | `/boot` (legacy) |
-| `rpool/ROOT/ubuntu` | `/` |
-| `rpool/home` | `/home` |
-| `rpool/home/root` | `/root` |
-| `rpool/var/log` | `/var/log` (legacy) |
-| `rpool/var/spool` | `/var/spool` (legacy) |
-| `rpool/var/cache` | `/var/cache` |
-| `rpool/var/tmp` | `/var/tmp` |
-| `rpool/tmp` | `/tmp` |
-| `rpool/srv` | `/srv` |
-| `xpool` | `/data` (optional, single disk) |
+| Firmware | UEFI, **Secure Boot aktiv** (das Script bricht sonst ab; PCR 7 ist ohne Secure Boot wertlos) |
+| TPM | TPM 2.0, in der Firmware aktiviert (`/dev/tpmrm0`). Ohne TPM läuft die Installation, du tippst dann bei jedem Boot die Passphrase und rufst später `sudo enroll-tpm2` auf |
+| Platten | Zwei Stück, je ca. **80 GiB+**, Größen dürfen abweichen. **Beide werden komplett gelöscht** |
+| Netz | Pflicht (debootstrap lädt ca. 500 MB) |
+| Medium | Ubuntu **26.04.1** Live-ISO (Desktop „Try Ubuntu“ oder Server-Shell), im UEFI-Modus gebootet |
 
 ---
 
-## Requirements
-
-### Hardware
-
-| Item | Requirement |
-|---|---|
-| Firmware | UEFI. **Secure Boot must be enabled** (the script refuses BIOS mode; PCR 7 is meaningless without Secure Boot). |
-| TPM | TPM 2.0, enabled in firmware (`/dev/tpmrm0` visible). Without it the install still works — you type the passphrase at every boot, then run `sudo enroll-tpm2` when the machine gets a TPM. |
-| Disks | Two. Any size ≥ 16 GiB, may differ. SATA, NVMe, SAS or virtio. **Both are completely wiped.** |
-| RAM | 2 GiB minimum for the install; the script and swap sizing were tuned for 32 GiB servers. |
-| Network | Required during install (`debootstrap` fetches ~500 MB). |
-
-### Software
-
-The **Ubuntu 26.04 live ISO** — Desktop ("Try Ubuntu") or Server shell. The Desktop
-session is more comfortable. Use the **26.04.1** point release (released 27 Aug 2026)
-for accumulated fixes.
-
-Nothing else — the script installs all tools it needs into the live environment.
-
----
-
-## Quick start
+## Schnellstart
 
 ```bash
-# 1. Boot Ubuntu 26.04.1 live ISO in UEFI mode with Secure Boot ON.
-#    Connect to the network.
-#    For SSH access to the live session, find the SSH key under Help in the live boot.
+# 1. Live-ISO im UEFI-Modus mit Secure Boot booten, Netzwerk verbinden
+mokutil --sb-state          # muss "SecureBoot enabled" zeigen
+ls /dev/tpmrm0              # existiert, wenn das TPM nutzbar ist
 
-# 2. Verify preconditions (recommended; installer also checks)
-mokutil --sb-state          # must show "SecureBoot enabled"
-ls /dev/tpmrm0              # exists if TPM 2.0 is usable
-
-# 3. Download the installer
-curl -fLO https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-2604-zfs-luks-tpm.sh
-
-# 4. Run as root
+# 2. Script auf das Live-System bringen (USB-Stick, scp, nano) und als root starten
 sudo -i
 bash install-2604-zfs-luks-tpm.sh
 
-# 5. Answer the prompts, type YES at the summary, set your passphrase.
-#    Takes 10-20 minutes depending on your internet connection.
-#    Remove the live medium when done and reboot.
-
-# 6. Connect over SSH after the installed system has booted.
-#    On the server console, find its LAN IP:
-ip -br addr
-#    From another computer on the same network (replace <server-ip>):
-ssh admin@<server-ip>
-#    Enter the admin password you set during installation.
+# 3. Fragen beantworten, bei der Zusammenfassung YES tippen, LUKS-Passphrase setzen.
+#    Dauer ca. 10–20 Minuten. Medium entfernen, neu starten.
 ```
+
+Das Script ist wiederholbar: Es löst die Zielplatten selbst von Mounts, Pools und Holdern, bevor es partitioniert.
 
 ---
 
-## What the script asks
+## Was das Script fragt
 
-| # | Prompt | Default | Notes |
+| Frage | Standard | Hinweis |
+|---|---|---|
+| Erste / zweite Platte | – | nummerierte Liste mit Größe, Modell und by-id-Name; das Live-Medium wird ausgeblendet |
+| Hostname | `ubuntu-server` | |
+| Admin-Benutzer | `admin` | bekommt `sudo` und `adm` |
+| Admin-Passwort | – | mind. 10 Zeichen, **zugleich SSH-Login-Passwort** |
+| Zeitzone / Locale | `Etc/UTC` / `en_US.UTF-8` | z. B. `Europe/Berlin`, `de_DE.UTF-8` |
+| Restplatz | `pool` | nur wenn die Platten ≥ 1 GiB abweichen: `pool` = unmirrored LUKS-Pool auf der größeren Platte, `none` = ungenutzt |
+| PCRs fürs TPM | `7` | `7` = Secure-Boot-Zustand; `0,7` = zusätzlich Firmware-Code (nach jedem Firmware-Update Passphrase nötig) |
+| TPM jetzt enrollen? | `now` | nur wenn `/dev/tpmrm0` vorhanden ist |
+| **`YES` tippen** | – | bis hierhin wurde nichts geschrieben |
+| LUKS-Passphrase | – | mind. 8 Zeichen, gilt für alle LUKS-Container. **Nimm eine lange Passphrase** und bewahre sie offline auf |
+
+---
+
+## Layout
+
+Beide Platten werden identisch partitioniert (Größen richten sich nach der kleineren Platte):
+
+| Part. | Typ | Größe | Inhalt |
 |---|---|---|---|
-| 1 | First disk | — | Numbered list with size, model and by-id name. Live USB filtered out. |
-| 2 | Second disk | — | Must differ from the first. |
-| 3 | Hostname | `ubuntu-server` | |
-| 4 | Admin username | `admin` | Gets `sudo` and `adm` groups. |
-| 5 | Admin password | — | Min 10 chars, typed twice. **Also the SSH login password.** |
-| 6 | Timezone | `Etc/UTC` | Validated against `/usr/share/zoneinfo`. |
-| 7 | Locale | `en_US.UTF-8` | Validated against `/usr/share/i18n/SUPPORTED`. |
-| 8 | Leftover space | `pool` | Only shown when disks differ by ≥ 1 GiB. `pool` → encrypted LUKS+TPM pool; `none` → unused. |
-| 9 | PCRs to seal against | `7` | `7` = Secure Boot state. `0,7` = also firmware code (passphrase needed after firmware updates). |
-| 10 | Enroll TPM2 now or later | `now` | Only shown when `/dev/tpmrm0` is present. |
-| — | **Type `YES` to confirm** | | Nothing has been written yet. |
-| 11 | LUKS passphrase | — | Min 8 chars, typed twice. Same passphrase for all LUKS containers on both disks. |
+| 1 | EFI | 1 GiB | FAT32; Platte 1 → `/boot/efi`, Platte 2 → `/boot/efi2` |
+| 2 | ZFS | 2 GiB | `bpool` (Mirror, `compatibility=grub2`), enthält `/boot` |
+| 3 | Swap | 4 GiB | dm-crypt plain, neuer Zufallsschlüssel bei jedem Boot |
+| 4 | LUKS2 | **64 GiB fest** | `luks-root1/2` → `rpool` (Mirror), das Betriebssystem |
+| 5 | LUKS2 | Rest der kleineren Platte | `luks-data1/2` → `dpool` (Mirror), `/home` und `/data` |
+| 6 | LUKS2 | Rest der größeren Platte | nur bei `pool`: `luks-extra` → eigener Pool, **keine Redundanz**, Mountpoint `/data/extra` |
+
+**Datasets:**
+
+| Pool | Dataset | Mountpoint |
+|---|---|---|
+| bpool | `BOOT/ubuntu` | `/boot` (legacy) |
+| rpool | `ROOT/ubuntu` | `/` |
+| rpool | `var/log`, `var/spool` | legacy-Mounts per fstab |
+| rpool | `var/cache`, `var/tmp`, `tmp`, `srv`, `root` | `/var/cache`, `/var/tmp`, `/tmp`, `/srv`, `/root` |
+| dpool | `home` | `/home` |
+| dpool | `data` | `/data` |
+
+Verschlüsselt wird mit AES-256-XTS, Schlüsselableitung argon2id. Auf jedem LUKS-Container liegen zwei Schlüssel-Slots: deine Passphrase und der TPM2-Schlüssel.
 
 ---
 
-## Disk layout
-
-Both disks are partitioned identically, sized to the **smaller disk**:
-
-| Partition | Type | Size | Content |
-|---|---|---|---|
-| 1 | `EF00` ESP | 1 GiB | FAT32. Disk 1 → `/boot/efi`, disk 2 → `/boot/efi2`. |
-| 2 | `BE00` ZFS | 2 GiB | `bpool` member. `compatibility=grub2`. Holds `/boot`. |
-| 3 | `8200` swap | 4 GiB | dm-crypt *plain* mode, random key per boot. |
-| 4 | `8309` LUKS | remainder | LUKS2 → `luks-rootN` → `rpool` member. |
-| 5 | `8309` LUKS | leftover (larger disk only) | LUKS2 → `luks-extra` → `xpool`. Optional. |
-
----
-
-## Boot chain
+## Bootkette
 
 ```
-UEFI firmware (Secure Boot ON)
-  └─ shimx64.efi       (Microsoft-signed, from Ubuntu)           ← disk 1 or 2
-      └─ grubx64.efi   (Canonical-signed)
-          └─ reads bpool (ZFS, grub2-compatible features)
-              └─ kernel + dracut initrd
-                  ├─ systemd-cryptsetup opens luks-root1 + luks-root2
-                  │     via rd.luks.name=<uuid>=luks-rootN
-                  │     TPM unseals if PCR 7 matches, else passphrase prompt
-                  ├─ zfs-dracut imports rpool, mounts rpool/ROOT/ubuntu
-                  └─ switch-root → systemd
-                      ├─ zfs-import-bpool.service  imports bpool (idempotent, -f)
-                      ├─ zfs-import-xpool.service  imports xpool after luks-extra opens
-                      ├─ zfs-mount.service         mounts all datasets
-                      ├─ systemd-cryptsetup@swap{1,2} opens swap (random key)
-                      └─ normal boot targets
-```
-
-**Kernel command line** (written to `/etc/default/grub`):
-```
-root=ZFS=rpool/ROOT/ubuntu
-rd.luks.name=<UUID1>=luks-root1
-rd.luks.name=<UUID2>=luks-root2
-rd.luks.options=discard,tpm2-device=auto
+UEFI (Secure Boot) → shimx64 → grubx64 (signiert) → liest bpool → Kernel + dracut-initrd
+  ├─ luks-root1/2 öffnen (TPM2, sonst Passphrase) → rpool importieren → Root mounten
+  └─ nach switch-root: luks-data1/2 öffnen → dpool importieren (zfs-import-dpool / zfs-import-scan)
 ```
 
 ---
 
-## Different-sized disks
-
-The ZFS mirror is capped to the **smaller disk**. The script:
-
-1. Sizes all partitions from the smaller disk and applies the layout to both.
-2. Puts the remainder on the larger disk into partition 5 → LUKS2 (same passphrase,
-   TPM-enrolled) → pool `xpool` at `/data`.
-
-`xpool` has **no redundancy**. If the larger disk fails, `/data` is gone. Use it for
-re-creatable data (caches, scratch, replicated content) or back it up with `zfs send`.
-
-It is marked `nofail` so its absence never blocks boot.
-
----
-
-## After the first boot
-
-### TPM unlock
-
-If you enrolled during install (`now`): the machine should boot hands-free. If the
-passphrase is requested anyway (PCR 7 changed between the live ISO's shim/GRUB and the
-installed ones):
+## Nach dem ersten Boot
 
 ```bash
-sudo enroll-tpm2        # re-seals against the installed system's PCR 7
+zpool status                          # bpool, rpool, dpool ONLINE
+swapon --show                         # zwei Swap-Geräte
+df -h /boot /boot/efi /data           # eingehängt
+sudo ufw status                       # Firewall aktiv? (wird erst beim ersten Boot geladen)
+sudo cryptsetup luksDump /dev/disk/by-id/<platte>-part4 | grep -A3 tpm2
+systemctl --failed                    # sollte leer sein
 ```
 
-If you chose `later`: type the passphrase at first boot, log in, then run the above.
+Fragt der Boot trotz TPM-Enrollment nach der Passphrase (PCR 7 des Live-Mediums und des installierten Systems können sich unterscheiden): Passphrase tippen, booten, dann `sudo enroll-tpm2`.
 
-### Verify everything
-
-```bash
-zpool status                    # rpool and bpool ONLINE
-swapon --show                   # two 4G swap devices
-df -h /boot /boot/efi /data     # all mounted
-sudo cryptsetup luksDump /dev/disk/by-id/<disk>-part4 | grep -A3 tpm2
-systemctl --failed              # should be empty
-```
-
-### Helper commands
-
-| Command | When to run |
+| Befehl | Wann |
 |---|---|
-| `sudo enroll-tpm2 [PCRS]` | After first boot (if deferred), firmware update, Secure Boot change, TPM clear, or disk replacement. Wipes old TPM slots, re-enrolls, keeps passphrase. |
-| `sudo sync-efi` | After `shim-signed` or `grub-efi-amd64-signed` package updates, so disk 2 stays bootable independently. |
-| `sudo zpool scrub rpool bpool` | Monthly. Catches silent bit rot early. |
+| `sudo enroll-tpm2 [PCRS]` | nach dem ersten Boot (falls zurückgestellt), nach Firmware-Update (bei PCR 0,7), Secure-Boot-Änderung, TPM-Reset oder Plattentausch. Löscht alte TPM-Slots, enrollt neu, die Passphrase bleibt |
+| `sudo sync-efi` | nach Updates von `shim-signed` oder `grub-efi-amd64-signed`, damit Platte 2 unabhängig bootfähig bleibt |
+| `sudo zpool scrub rpool bpool dpool` | monatlich |
 
 ---
 
-## Security model
+## Empfehlung für NAS, VMs und Docker (nicht Teil des Scripts)
 
-### What this protects
-
-- A disk (or both) removed from the machine is unreadable. All user data, logs, swap and
-  the root filesystem are encrypted. Only the ESP (shim, GRUB) and `bpool` (kernel,
-  initrd) are plaintext — the same as every LUKS+GRUB setup.
-- Boot-chain tampering (Secure Boot disabled, unsigned bootloader, changed SB keys)
-  changes PCR 7 → TPM refuses to unseal → passphrase required.
-- Booting a foreign live USB: Secure Boot rejects unsigned media; signed media from a
-  different vendor changes PCR 7 → no unseal.
-
-### What this does NOT protect
-
-- Someone who simply powers the machine on and lets it boot to the login prompt. The TPM
-  unseals; your defense is the **user password and SSH hardening**.
-- Network / kernel exploits against the running system.
-- TPM bus-sniffing (mitigated on discrete TPMs by `--tpm2-with-pin`; not enabled here
-  as it defeats unattended boot on a server).
-- Loss of the passphrase. **If the TPM refuses to unseal and you have no passphrase, the
-  data is permanently inaccessible.** Store it offline.
-
-### Choosing PCRs
-
-| PCRs | Measures | Survives firmware update | Survives Secure Boot change |
-|---|---|---|---|
-| `7` | Secure Boot policy & certs | ✅ yes | ❌ passphrase + re-enroll |
-| `0,7` | + firmware code | ❌ passphrase + re-enroll | ❌ passphrase + re-enroll |
-
-`7` is recommended for servers that receive regular firmware updates.
-
----
-
-## Design decisions
-
-- **LUKS under ZFS, not ZFS native encryption.** LUKS encrypts everything including ZFS
-  metadata, integrates with `systemd-cryptenroll`/TPM2 out of the box, and lets swap and
-  the optional extra pool share one unlock mechanism. ZFS native encryption cannot be
-  TPM-unlocked without custom tooling and leaks dataset metadata.
-- **Separate `bpool`.** GRUB understands only a subset of ZFS features. `bpool` is
-  created with `compatibility=grub2` so `rpool` can use all modern features. The name
-  `bpool` is mandatory for Ubuntu's GRUB scripts.
-- **Empty `/etc/zfs/zpool.cache` on the installed system.** `rpool` is discovered
-  by the ZFS scan importer in the initramfs for `root=ZFS=…`; keep
-  `zfs-import-scan.service` enabled so the root pool can be found before `/` mounts.
-  The custom `bpool` and `dpool` import services run before the scan importer and are
-  idempotent. The installer disables `zfs-import-cache.service` because the cache is
-  intentionally empty.
-- **`-f` on bpool/xpool import.** Handles an unclean pool from a power cut or the
-  live-session teardown race. Safe on a dedicated pool that cannot be simultaneously
-  imported on another host.
-- **`rd.luks.name=` only for root vdevs on the kernel command line.** This fixes
-  initrd `/dev/mapper` names for `rpool` while avoiding hard requirements on data vdevs,
-  improving one-disk degraded boot behavior.
-- **Random-key swap.** No hibernation on a 24/7 server. No TPM slot to manage.
-- **`/dev/disk/by-id` everywhere.** Pool members and partition references survive
-  controller reordering.
-- **`sudo-rs`** is the 26.04 default sudo provider.
-- **dracut `hostonly="no"`** for the install. Host-only detection is unreliable in a
-  chroot. Switch to `hostonly="yes"` later if you want a smaller initrd.
-- **No debootstrap suite fallback symlink.** If the selected suite script is missing,
-  the installer fails fast instead of silently bootstrapping with a mismatched release.
-- **`pipefail` deliberately omitted.** Several helpers pipe commands that return non-zero
-  when "nothing found" (findmnt, grep) into `tr`/`head`. Under `pipefail` + `set -e`
-  this kills the script silently with no error message.
-
----
-
-## Known limitations
-
-- **amd64 only.**
-- Installs `linux-image-generic` only. HWE or cloud kernels require adjusting the
-  package list.
-- **USB-attached disks as mirror members** are unreliable: bus resets cause ZFS to mark
-  the vdev UNAVAIL. The pool recovers once the device re-appears (`zpool online bpool
-  <id>`), but this will happen occasionally. An internal drive is strongly recommended
-  for a 24/7 server.
-- Single admin user; no cloud-init.
-- Networking is DHCP on all `en*` interfaces. Edit `/etc/netplan/01-netcfg.yaml` for
-  static IPs, bonds or VLANs.
-- No `--tpm2-with-pin` (TPM + PIN). Trivial to add in `enroll-tpm2` if wanted.
-- Password SSH is enabled by design. If the host is internet-facing, consider moving to
-  key-based auth and disabling passwords, or adding `fail2ban`.
-- Adding a third mirror member or converting to RAIDZ is standard ZFS work and is not
-  covered here.
-
----
-
-## Maintenance
-
-### Routine
-
-| Frequency | Task |
-|---|---|
-| After `shim-signed`/`grub-efi-amd64-signed` updates | `sudo sync-efi` |
-| After a firmware update (PCRs `0,7` only) | Boot with passphrase, then `sudo enroll-tpm2 0,7` |
-| After Secure Boot key / policy change | Boot with passphrase, then `sudo enroll-tpm2` |
-| After clearing the TPM | Boot with passphrase, then `sudo enroll-tpm2` |
-| Monthly | `sudo zpool scrub rpool bpool` |
-
-Kernel updates need nothing special: the dracut and GRUB hooks regenerate the initrd and
-`grub.cfg` automatically.
-
-### Replacing a failed disk
+Der OS-Pool ist nur 64 GiB groß, und `/var/lib` liegt darauf. Docker-Images, VM-Platten und Container würden ihn füllen. Lege solche Daten auf eigene Datasets im `dpool`:
 
 ```bash
-# 1. Replicate the partition table from the surviving disk
-sudo sgdisk --replicate=/dev/disk/by-id/NEW /dev/disk/by-id/GOOD
-sudo sgdisk --randomize-guids /dev/disk/by-id/NEW
-
-# 2. Replace the bpool member
-sudo zpool replace bpool <old-guid-from-zpool-status> /dev/disk/by-id/NEW-part2
-
-# 3. LUKS on the new root partition
-sudo cryptsetup luksFormat --type luks2 --pbkdf argon2id /dev/disk/by-id/NEW-part4
-sudo cryptsetup open --allow-discards --persistent /dev/disk/by-id/NEW-part4 luks-rootN
-
-# 4. Replace the rpool member
-sudo zpool replace rpool <old-guid> /dev/mapper/luks-rootN
-
-# 5. Update crypttab + kernel cmdline with the new UUID
-NEWUUID=$(sudo cryptsetup luksUUID /dev/disk/by-id/NEW-part4)
-sudo sed -i "s|^luks-rootN .*|luks-rootN UUID=$NEWUUID none luks,discard,tpm2-device=auto,x-initrd.attach,nofail|" /etc/crypttab
-sudo sed -i "s|rd.luks.name=[^ ]*=luks-rootN|rd.luks.name=$NEWUUID=luks-rootN|" /etc/default/grub
-
-# If dpool exists, replace its member too (part5)
-# sudo cryptsetup luksFormat --type luks2 --pbkdf argon2id /dev/disk/by-id/NEW-part5
-# sudo cryptsetup open --allow-discards --persistent /dev/disk/by-id/NEW-part5 luks-dataN
-# sudo zpool replace dpool <old-guid> /dev/mapper/luks-dataN
-# NEWUUID_DATA=$(sudo cryptsetup luksUUID /dev/disk/by-id/NEW-part5)
-# sudo sed -i "s|^luks-dataN .*|luks-dataN UUID=$NEWUUID_DATA none luks,discard,tpm2-device=auto,nofail|" /etc/crypttab
-
-# 6. Enroll TPM, rebuild initrd + grub, sync EFI
-sudo enroll-tpm2
-sudo dracut -f --regenerate-all
-sudo update-grub
-sudo mkfs.vfat -F32 /dev/disk/by-id/NEW-part1
-sudo mount /boot/efi2 && sudo sync-efi
-sudo efibootmgr -c -g -d /dev/disk/by-id/NEW -p 1 -L "ubuntu (disk 2)" -l '\EFI\ubuntu\shimx64.efi'
-
-# 7. Wait for resilver
-watch zpool status
+sudo zfs create dpool/data/docker
+sudo zfs create dpool/data/vm
+sudo zfs create dpool/data/media     # je Samba-Share ein eigenes Dataset
 ```
 
-### Changing the LUKS passphrase
-
-```bash
-for p in \
-  /dev/disk/by-id/DISK1-part4 \
-  /dev/disk/by-id/DISK2-part4 \
-  /dev/disk/by-id/BIGDISK-part5; do   # omit part5 if no xpool
-  sudo cryptsetup luksChangeKey "$p"
-done
-# TPM slots are unaffected; enroll-tpm2 will ask for the new passphrase next run
-```
+Danach Docker auf `data-root: /data/docker` stellen (`/etc/docker/daemon.json`) und den Docker-Dienst per systemd-Drop-in mit `RequiresMountsFor=/data/docker` hinter den Mount ordnen. Auch für VM-Images (z. B. libvirt) einen Pfad unter `/data/vm` wählen. Docker-Speichertreiber (overlay2 oder zfs) vor dem Einsatz prüfen.
 
 ---
 
-## Troubleshooting
+## Änderungen gegenüber rev. 9.0
 
-### Emergency mode at first boot
+1. **Firewall (UFW):** Im Chroot werden die Regeln nur geschrieben (`default deny incoming`, `allow 22/tcp`), `ufw enable` läuft dort nicht mehr. Der Aufruf hätte den Live-Kernel angesprochen und unter `set -e` das Chroot-Script vor dracut/GRUB abbrechen können. Aktiviert wird per `ENABLED=yes` und `ufw.service` beim ersten Boot. Lässt sich die SSH-Regel nicht schreiben, bleibt die Firewall aus (mit Warnung), statt deny-all ohne SSH zu aktivieren.
+2. **`zfs-import-dpool.service`:** `After=systemd-cryptsetup.target` zeigte auf ein Target, das es nicht gibt. Jetzt `After=cryptsetup.target`, außerdem abgesichert gegen ein Wettrennen mit `zfs-import-scan.service`.
+3. **NVRAM-Eintrag für Platte 2:** Alte „ubuntu (disk 2)“-Einträge früherer Läufe werden entfernt. Ein Fehler beim Anlegen ist nicht mehr fatal (vorher brach das Script ab, bevor `enroll-tpm2` geschrieben und aufgeräumt wurde). Stattdessen erscheint am Ende eine Warnung mit dem manuellen Befehl.
 
+**Nicht geändert:** festes 64-GiB-Layout, SSH-Passwort-Login, manueller `sync-efi`, PCR-7-only-Bindung ohne PIN, Mindestlänge 8 der LUKS-Passphrase, der Secure-Boot-MOK-Hinweis am Ende (für Standardsysteme meist irrelevant), doppelte NVRAM-Einträge „ubuntu“ bei Wiederholungsläufen (ggf. mit `efibootmgr -B` entfernen).
+
+---
+
+## Sicherheitsmodell
+
+**Schützt gegen:**
+- Ausgebaute Platten (alles außer ESP und `bpool` ist verschlüsselt; Kernel und initrd liegen unverschlüsselt, wie bei jedem LUKS+GRUB-Setup).
+- Manipulation der Bootkette: Ändert sich der Secure-Boot-Zustand (PCR 7), gibt das TPM den Schlüssel nicht frei, und es wird die Passphrase verlangt.
+
+**Schützt nicht gegen:**
+- Jemanden, der den Rechner einfach einschaltet: Das TPM entsperrt, deine Verteidigung sind dann Benutzerpasswort und SSH-Härtung.
+- Angriffe auf das laufende System und TPM-Bus-Sniffing (`--tpm2-with-pin` ist nicht aktiv, weil es unbeaufsichtigten Boot verhindert).
+- Verlust der Passphrase: Verweigert das TPM die Freigabe und du hast keine Passphrase, sind die Daten unwiederbringlich weg.
+
+Weitere Hinweise: SSH-Passwort-Login nach der Installation auf Schlüssel umstellen. `discard`/`autotrim` laufen durch LUKS und verraten, welche Blöcke frei sind (Kompromiss zugunsten der SSD-Lebensdauer).
+
+---
+
+## Wartung und Fehlerbehebung
+
+**Platte ersetzen:** Das Upstream-README beschreibt den Ablauf nur für das alte Layout. Hier kommt zusätzlich Partition 5 (`luks-data`) und der Pool `dpool` dazu: Partitionstabelle replizieren, `bpool`, `rpool` **und** `dpool` jeweils mit `zpool replace` ersetzen, crypttab und die `rd.luks.name`-UUIDs in `/etc/default/grub` aktualisieren, `enroll-tpm2`, `dracut -f --regenerate-all`, `update-grub`, ESP neu anlegen und `sync-efi`. Vorher an einer Testmaschine durchspielen.
+
+**Notfall-Shell beim Boot (dracut):**
 ```bash
-systemctl --failed --no-pager    # find the failed unit
-journalctl -b -p err --no-pager | tail -30
+ls /dev/mapper/                  # sind luks-root1 und luks-root2 da?
+zpool import                     # welche Pools sind sichtbar?
+zpool import -f -N rpool; exit   # manuell importieren, dann weiter booten
 ```
 
-**`zfs-import-bpool.service` failed** — most common first-boot failure:
+**`zfs-import-bpool.service` fehlgeschlagen:**
 ```bash
-zpool import -f -N bpool         # manual import
+zpool import -f -N bpool
 systemctl reset-failed zfs-import-bpool.service
-exit                             # resume normal boot
 ```
 
-**Passphrase prompt when TPM was enrolled** — PCR 7 changed between live ISO and
-installed shim/GRUB. Type the passphrase, boot normally, then:
-```bash
-sudo enroll-tpm2
-```
+**`/home` oder `/data` fehlen nach dem Boot:** Wahrscheinlich wurden `luks-data1/2` nicht entsperrt (TPM-Freigabe fehlgeschlagen, `nofail` lässt den Boot trotzdem weiterlaufen). Mit `sudo enroll-tpm2` neu binden oder die Container manuell öffnen, dann `sudo zpool import dpool`.
 
-**Dracut emergency shell: rpool not found**
-```bash
-# inside the dracut shell
-ls /dev/mapper/                  # are luks-root1 and luks-root2 present?
-zpool import                     # what pools are visible?
-zpool import -f -N rpool ; exit  # manual import, then continue
-```
-
-### Pool shows DEGRADED after boot
-
-USB-attached vdev was not ready when ZFS scanned. Recovers automatically once the device
-appears:
-```bash
-zpool online bpool <id>          # id from `zpool status`
-zpool status                     # confirm ONLINE and resilvering
-```
-
-### Rescue from the live ISO
-
+**Rettung vom Live-ISO** (aus dem Upstream-README an das Layout angepasst, ungetestet):
 ```bash
 sudo -i
 cryptsetup open /dev/disk/by-id/DISK1-part4 luks-root1
 cryptsetup open /dev/disk/by-id/DISK2-part4 luks-root2
+cryptsetup open /dev/disk/by-id/DISK1-part5 luks-data1
+cryptsetup open /dev/disk/by-id/DISK2-part5 luks-data2
 zpool import -N -R /mnt rpool
+zpool import -N -R /mnt dpool
 zfs mount rpool/ROOT/ubuntu && zfs mount -a
 zpool import -N -R /mnt bpool
 mount -t zfs bpool/BOOT/ubuntu /mnt/boot
 mount /dev/disk/by-id/DISK1-part1 /mnt/boot/efi
 for f in dev proc sys run; do mount --rbind /$f /mnt/$f; mount --make-rslave /mnt/$f; done
 chroot /mnt
-# fix things, then:
-exit
-umount -R /mnt
-zpool export -a
-cryptsetup close luks-root1; cryptsetup close luks-root2
+# nach der Reparatur: exit, umount -R /mnt, zpool export -a, cryptsetup close <name>
 ```
 
 ---
 
-## Contributing
+## Bekannte Einschränkungen
 
-Bug reports are most useful with:
-- Last ~30 lines of script output
-- `systemctl --failed` and relevant `journalctl -b` excerpt
-- Hardware (VM or bare metal, TPM type, disk types and sizes)
-- Whether Secure Boot was on
-
-PRs welcome. Keep the script single-file, `set -eu`-clean and interactive-first.
+- Nur amd64, nur `linux-image-generic`.
+- USB-Platten als Mirror-Mitglieder sind unzuverlässig (Bus-Resets lassen ZFS das Vdev als UNAVAIL markieren). Für einen 24/7-Server interne Platten verwenden.
+- Ein Admin-Benutzer, kein cloud-init; Netzwerk per DHCP auf allen `en*`-Schnittstellen (`/etc/netplan/01-netcfg.yaml` anpassen).
+- Der Mirror ist so schnell wie die langsamere Platte (relevant bei NVMe + SATA-SSD).
+- Das Script ist weder von mir noch von einer größeren Community geprüft: ein Autor, wenige Commits, ein Testgerät.
 
 ---
 
-## Changelog
+## Herkunft und Lizenz
 
-### [0.8.2] — 2026-09-05 ✅ First fully verified run
-- **Tested on HP ProDesk 400 G6** (NVMe + USB-NVMe, fTPM 2.0, Secure Boot, kernel 7.0.0-31-generic)
-- 0 failed units, 0 journal errors on first clean boot
-- All pools, datasets, swap, SSH, TPM unlock, dual ESP verified
-
-**Fixed:**
-- `xpool` (extra pool on larger disk) was not imported at boot — added dedicated
-  `zfs-import-xpool.service` that waits for `luks-extra` to open, then imports with
-  `-f` and a 20 s retry loop (rev. 8.2)
-
-### [0.8.1] — 2026-09-05
-- `zfs-import-bpool.service` made idempotent (exit 0 if already imported by zfs-import-scan)
-- Added 20 s retry loop for slow USB device enumeration
-
-### [0.8.0] — 2026-09-05
-- Empty `/etc/zfs/zpool.cache` on installed system prevents import-cache racing with import-bpool
-- `-f` added to bpool import; cachefile-shuffle `mv` lines removed
-- `zstd` added to target packages (dracut compression)
-- Teardown never fatal: kills stray processes, sweeps all mount namespaces, retries export
-
-### [0.7.3] — 2026-09-05
-- Teardown and `release_disks` both sweep private mount namespaces via `nsenter`
-
-### [0.7.2] — 2026-09-05
-- `mkdir -p` before legacy ZFS remount (`zfs umount` removes empty inherited dirs)
-- Working DNS in chroot (copy live resolv.conf in, restore stub symlink after)
-- `tmpfs` on `/run` inside chroot for package postinsts
-
-### [0.7.1] — 2026-09-05
-- `release_disks` holder removal fixed (sysfs kernel names → mapper names)
-- Exports all pools, not only script-owned ones
-
-### [0.6.0] — 2026-09-05
-- Dropped `pipefail` — `findmnt`'s "not mounted" exit code was killing the script silently
-
-### [0.5.0] — 2026-09-05
-- `multipathd` stopped before partitioning (Ubuntu Server live ISO)
-- Stale partition signatures wiped; `assert_free` names the holder on failure
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-**No warranty. This script destroys all data on the disks you select. Read it before you run it.**
+Basiert auf `FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm` (rev. 9.0). Der Script-Header nennt die Lizenz MIT, die Repo-Seite zeigt widersprüchlich auch Apache-2.0. Prüfe die `LICENSE`-Datei im Original und übernimm den Lizenzhinweis, wenn du das Script weitergibst. **Keine Gewährleistung.**
