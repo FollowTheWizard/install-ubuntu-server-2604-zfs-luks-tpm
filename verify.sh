@@ -1,8 +1,27 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  verify-install.sh  rev 4
-#  Fixes: (1) ok/fail/warn counter arithmetic causing double-fire
-#         (2) wrong BE00 GUID + zpool-status fallback for bpool detection
+#  verify-install.sh  rev 5  (patched copy of upstream verify.sh rev 4)
+#  SPDX-License-Identifier: Apache-2.0 — see LICENSE and NOTICE.
+#  Derived from FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm (verify.sh rev 4).
+#  Written for installer rev. 9.0-p1. NOT tested on real hardware.
+#
+#  Upstream rev 4 fixes: (1) ok/fail/warn counter arithmetic causing double-fire
+#                        (2) wrong BE00 GUID + zpool-status fallback for bpool detection
+#
+#  Changes vs. rev 4 (modified file, Apache-2.0 §4b):
+#   1. dpool unit check: installer p1 orders the unit After=cryptsetup.target. rev 4
+#      demanded systemd-cryptsetup.target (does not exist) and would FAIL on every p1 install.
+#   2. `echo "$BIG" | grep -q` under pipefail returns 141 (SIGPIPE) on large input (initrd
+#      listing) -> false "not matched". Now here-strings / captured output.
+#   3. bpool membership fallback could never match (indentation, by-id/relative names);
+#      now parses `zpool status -LP`.
+#   4. NVRAM: p1 installer treats a failed disk-2 boot entry as non-fatal -> checked here.
+#   5. dpkg -s also succeeds for removed-but-configured packages -> dpkg-query status "ii".
+#   6. /boot/efi not mounted is FAIL; ESP content diff; extra-pool import check; TPM slot
+#      check for luks-extra; exact port-22 match; luksDump hint uses the real device; box.
+#   7. ok/fail/warn/info/hdr printed via `echo -e`, which interprets backslashes inside the
+#      message: efibootmgr lines (File(\EFI\ubuntu\shimx64.efi)) came out mangled (\E = ESC,
+#      ...). Now printf with %s.
 #  Run on the installed system (after first boot) as root.
 #  Usage:  sudo bash verify-install.sh [--disk1 /dev/sdX] [--disk2 /dev/sdY]
 # =============================================================================
@@ -16,11 +35,13 @@ PASS=0; FAIL=0; WARN=0
 # the NEW value (≥1 = true).  Post-increment (( X++ )) evaluates to the OLD
 # value; when X=0 that is (( 0 )) = exit 1, causing  && ok || fail  to fire
 # BOTH branches on the very first check.
-ok()   { echo -e "  ${GRN}[PASS]${RST} $*"; (( ++PASS )); return 0; }
-fail() { echo -e "  ${RED}[FAIL]${RST} $*"; (( ++FAIL )); return 0; }
-warn() { echo -e "  ${YLW}[WARN]${RST} $*"; (( ++WARN )); return 0; }
-info() { echo -e "  ${CYN}[INFO]${RST} $*"; }
-hdr()  { echo -e "\n${BLD}══ $* ${RST}"; }
+# Output helpers use printf: colour codes go through %b, the message through %s so that
+# backslashes in it stay literal (echo -e would turn "\EFI\ubuntu" from efibootmgr into ESC etc.)
+ok()   { printf '  %b[PASS]%b %s\n' "$GRN" "$RST" "$*"; (( ++PASS )); return 0; }
+fail() { printf '  %b[FAIL]%b %s\n' "$RED" "$RST" "$*"; (( ++FAIL )); return 0; }
+warn() { printf '  %b[WARN]%b %s\n' "$YLW" "$RST" "$*"; (( ++WARN )); return 0; }
+info() { printf '  %b[INFO]%b %s\n' "$CYN" "$RST" "$*"; }
+hdr()  { printf '\n%b══ %s %b\n' "$BLD" "$*" "$RST"; }
 
 DISK1=""; DISK2=""
 while [[ $# -gt 0 ]]; do
@@ -44,9 +65,14 @@ if [[ -z $DISK1 || -z $DISK2 ]] && [[ -f /etc/crypttab ]]; then
   [[ -z $DISK2 && -n ${UUID_RP2:-} ]] && DISK2=$(detect_disk_from_uuid "$UUID_RP2")
 fi
 
+# Backing partition of luks-root1 (used for the follow-up hint at the end)
+ROOT1_UUID=$(awk '/^luks-root1[[:space:]]/{gsub("UUID=",""); print $2}' /etc/crypttab 2>/dev/null || true)
+ROOT1_DEV=""
+[[ -n $ROOT1_UUID ]] && ROOT1_DEV=$(blkid -U "$ROOT1_UUID" 2>/dev/null || true)
+
 echo -e "${BLD}"
 echo "╔══════════════════════════════════════════════════════════════════════════╗"
-echo "║      ZFS + LUKS2 + TPM2 Install Verification  (rev 4)                  ║"
+echo "║      ZFS + LUKS2 + TPM2 Install Verification  (rev 5)                    ║"
 echo "╚══════════════════════════════════════════════════════════════════════════╝"
 echo -e "${RST}"
 info "DISK1 = ${DISK1:-(unknown)}"
@@ -63,10 +89,17 @@ else
 fi
 
 if efibootmgr -q 2>/dev/null; then
-  ubuntu_entries=$(efibootmgr 2>/dev/null | grep -i ubuntu | wc -l)
+  efi_list=$(efibootmgr 2>/dev/null || true)
+  ubuntu_entries=$(grep -ci 'ubuntu' <<< "$efi_list" || true)
   if (( ubuntu_entries >= 1 )); then
     ok "NVRAM has $ubuntu_entries ubuntu boot entry/entries"
-    efibootmgr 2>/dev/null | grep -i ubuntu | while read -r line; do info "  $line"; done
+    grep -i 'ubuntu' <<< "$efi_list" | while read -r line; do info "  $line"; done
+    # Installer p1: failure to create the disk-2 entry is non-fatal there, so check it here.
+    if grep -q 'ubuntu (disk 2)' <<< "$efi_list"; then
+      ok "  NVRAM: boot entry for disk 2 present (redundant boot)"
+    else
+      warn "  NVRAM: no 'ubuntu (disk 2)' entry — firmware can only boot via disk 1 (create it: see README, Wartung)"
+    fi
   else
     fail "No 'ubuntu' entry found in NVRAM"
   fi
@@ -93,13 +126,16 @@ GUID_BPOOL="6a82cb45-1dd2-11b2-99a6-080020736631"  # BE00 Solaris boot ← FIXED
 GUID_SWAP="0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"   # 8200 Linux swap
 GUID_LUKS="ca7d7ccb-63ed-4c53-861c-1742536059cc"   # 8309 Linux LUKS
 
-# Build set of block devices that are bpool vdev members (ground-truth fallback)
+# Build set of block devices that are bpool vdev members (ground-truth fallback).
+# `-L` resolves by-id symlinks to kernel names, `-P` prints full paths. Plain
+# `zpool status` prints bare names (nvme-..., ata-...) and indents mirror members
+# differently from single disks, so matching by indentation/prefix never worked.
 BPOOL_DEVS=()
 if zpool list bpool &>/dev/null; then
   while IFS= read -r dev; do
     [[ -b $dev ]] && BPOOL_DEVS+=("$(readlink -f "$dev")")
-  done < <(zpool status bpool 2>/dev/null \
-    | awk '/^\t  (\/|sd|nvme|vd|hd)/{print $1}')
+  done < <(zpool status -LP bpool 2>/dev/null \
+    | awk '$1 ~ /^\/dev\//{print $1}')
 fi
 
 disk_has_bpool_partition() {
@@ -183,14 +219,18 @@ for mnt in /boot/efi /boot/efi2; do
                           || fail "  grubx64.efi NOT found under $mnt/EFI"
       [[ -n $shim    ]] && ok "  shimx64.efi found: $shim" \
                           || fail "  shimx64.efi NOT found under $mnt/EFI"
-      if [[ $mnt == /boot/efi ]]; then
-        efi2_grub=$(find /boot/efi2/EFI -name 'grubx64.efi' 2>/dev/null | head -1)
-        [[ -n $efi2_grub ]] && ok "  /boot/efi2 mirrors EFI content" \
-                              || warn "  /boot/efi2 may not be synced (run: sudo sync-efi)"
+      if [[ $mnt == /boot/efi ]] && mountpoint -q /boot/efi2 2>/dev/null; then
+        if diff -rq /boot/efi/EFI /boot/efi2/EFI &>/dev/null; then
+          ok "  /boot/efi2 content identical to /boot/efi (in sync)"
+        else
+          warn "  /boot/efi2 differs from /boot/efi (run: sudo sync-efi)"
+        fi
       fi
     else
       fail "$mnt is $fstype, expected vfat"
     fi
+  elif [[ $mnt == /boot/efi ]]; then
+    fail "$mnt NOT mounted (primary ESP — check fstab; grub/shim updates need it)"
   else
     warn "$mnt not mounted (redundant ESP is optional during single-disk operation)"
   fi
@@ -214,7 +254,16 @@ for m in luks-root1 luks-root2 luks-data1 luks-data2; do
     fail "/dev/mapper/$m NOT open"
   fi
 done
-[[ -b /dev/mapper/luks-extra ]] && ok "/dev/mapper/luks-extra open (extra pool)"
+if [[ -b /dev/mapper/luks-extra ]]; then
+  ok "/dev/mapper/luks-extra open (extra pool)"
+  extra_real=$(readlink -f /dev/mapper/luks-extra)
+  zst_all=$(zpool status -LP 2>/dev/null || true)
+  if grep -Eq "(^|[[:space:]])${extra_real}([[:space:]]|\$)" <<< "$zst_all"; then
+    ok "  extra pool is imported (member $extra_real)"
+  else
+    warn "  luks-extra is open but no imported pool uses it (try: sudo zpool import -d /dev/mapper)"
+  fi
+fi
 
 # =============================================================================
 hdr "5. ZFS POOLS"
@@ -396,7 +445,9 @@ if [[ -n $initrd ]]; then
       local label=$1; shift
       local found=false
       for pattern in "$@"; do
-        if echo "$INITRD_LIST" | grep -qi "$pattern"; then
+        # here-string, not `echo | grep -q`: with pipefail the latter returns 141 (SIGPIPE)
+        # when grep exits on an early match of a large listing
+        if grep -qi -- "$pattern" <<< "$INITRD_LIST"; then
           found=true; break
         fi
       done
@@ -421,8 +472,9 @@ if [[ -n $initrd ]]; then
   if [[ -c /dev/tpmrm0 ]]; then
     _uuid=$(awk '/^luks-root1/{gsub("UUID=",""); print $2}' /etc/crypttab 2>/dev/null)
     _dev=$(blkid -U "$_uuid" 2>/dev/null || true)
-    [[ -n $_dev ]] && cryptsetup luksDump "$_dev" 2>/dev/null \
-      | grep -q 'systemd-tpm2' && tpm_ok=true
+    _dump=""
+    [[ -n $_dev ]] && _dump=$(cryptsetup luksDump "$_dev" 2>/dev/null || true)
+    grep -q 'systemd-tpm2' <<< "$_dump" && tpm_ok=true
   fi
 
   if $zfs_ok && $luks_ok; then
@@ -459,7 +511,7 @@ if [[ -c /dev/tpmrm0 ]]; then
         || warn "  tpm2_getcap failed (TPM may be locked or in use)"; }
 
   enroll_count=0
-  for entry in luks-root1 luks-root2 luks-data1 luks-data2; do
+  for entry in luks-root1 luks-root2 luks-data1 luks-data2 luks-extra; do
     uuid_line=$(grep "^$entry" /etc/crypttab 2>/dev/null || true)
     [[ -z $uuid_line ]] && continue
     uuid=$(awk '{gsub("UUID=",""); print $2}' <<< "$uuid_line")
@@ -540,9 +592,15 @@ DPOOL_UNIT=/etc/systemd/system/zfs-import-dpool.service
 if [[ -f $DPOOL_UNIT ]]; then
   ok "$DPOOL_UNIT exists"
 
-  grep -q '^After=systemd-cryptsetup.target' "$DPOOL_UNIT" \
-    && ok "dpool unit waits for systemd-cryptsetup.target" \
-    || fail "dpool unit missing After=systemd-cryptsetup.target"
+  # Installer p1 uses After=cryptsetup.target. systemd-cryptsetup.target does not exist
+  # (installer rev. 9.0 bug): an After= on a missing unit is silently ignored.
+  if grep -Eq '^After=([^#]*[[:space:]])?cryptsetup\.target([[:space:]]|$)' "$DPOOL_UNIT"; then
+    ok "dpool unit waits for cryptsetup.target"
+  elif grep -q 'systemd-cryptsetup\.target' "$DPOOL_UNIT"; then
+    fail "dpool unit orders after systemd-cryptsetup.target, which does not exist — use After=cryptsetup.target"
+  else
+    fail "dpool unit missing After=cryptsetup.target"
+  fi
 
   grep -q '/dev/mapper/luks-data1' "$DPOOL_UNIT" && grep -q '/dev/mapper/luks-data2' "$DPOOL_UNIT" \
     && ok "dpool unit checks for either luks-data1/luks-data2 mapper" \
@@ -622,7 +680,8 @@ root_pw=$(passwd -S root 2>/dev/null | awk '{print $2}')
   && ok "root account locked ($root_pw)" \
   || warn "root status: '$root_pw' (expected L/LK)"
 
-ss -lntp 2>/dev/null | grep -q ':22' \
+ss_out=$(ss -lnt 2>/dev/null || true)
+grep -Eq '[:.]22[[:space:]]' <<< "$ss_out" \
   && ok "sshd listening on port 22" \
   || warn "sshd not detected on port 22"
 
@@ -734,15 +793,17 @@ hdr "20. PACKAGE SANITY CHECK"
 
 for pkg in \
   zfsutils-linux zfs-zed zfs-dracut dracut \
-  cryptsetup tpm2-tools \
+  cryptsetup systemd-cryptsetup tpm2-tools \
   grub-efi-amd64 shim-signed efibootmgr \
   openssh-server ufw netplan.io \
   systemd-resolved linux-image-generic; do
-  if dpkg -s "$pkg" &>/dev/null; then
-    ver=$(dpkg -s "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+  # `dpkg -s` also exits 0 for removed-but-configured packages; require status "ii"
+  pkg_state=$(dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null || true)
+  if [[ $pkg_state == ii* ]]; then
+    ver=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null)
     ok "Package $pkg ($ver)"
   else
-    fail "Package $pkg NOT installed"
+    fail "Package $pkg NOT installed (dpkg status: ${pkg_state:-unknown})"
   fi
 done
 
@@ -770,7 +831,7 @@ echo ""
 echo " Useful follow-up commands:"
 echo "   sudo zpool status -v rpool bpool dpool"
 echo "   sudo zpool scrub rpool bpool dpool"
-echo "   sudo cryptsetup luksDump /dev/sda4 | grep -A5 tpm2"
+echo "   sudo cryptsetup luksDump ${ROOT1_DEV:-<root-LUKS-partition>} | grep -A5 tpm2"
 echo "   sudo enroll-tpm2 7         # if TPM2 not yet enrolled"
 echo "   sudo sync-efi              # after grub/shim package updates"
 echo "   sudo journalctl -b -p err  # errors from this boot"
