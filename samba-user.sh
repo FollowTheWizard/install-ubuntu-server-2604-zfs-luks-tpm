@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0 — see LICENSE and NOTICE.
+# Derived from FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm (samba-user.sh);
+# modified (Apache-2.0 §4b). NOT tested against a real Samba installation.
+# Changes vs. the original:
+#  1. samba_user_exists: fixed-string match (grep -F). The old regex treated the trailing
+#     "$" of machine-account names as an end anchor ("foo$" matched user "foo", and an
+#     existing "bar$" was not found). Also no `grep -q` inside a pipe under pipefail
+#     (SIGPIPE -> false "not found").
+#  2. add: if the Samba user already exists, the password is no longer silently reset
+#     (smbpasswd -a on an existing user overwrites it); group membership is still ensured.
+#  3. add: `read` at EOF / non-interactive stdin no longer aborts silently under set -e.
+#  4. require_cmd: says which package provides smbpasswd/pdbedit.
 set -Eeuo pipefail
 
 ###############################################################################
@@ -43,14 +55,20 @@ require_cmd() {
     for c in "$@"; do
         command -v "$c" >/dev/null 2>&1 || {
             echo "Required command not found: $c"
+            case "$c" in
+                smbpasswd|pdbedit) echo "Install Samba first:  apt install samba" ;;
+            esac
             exit 1
         }
     done
 }
 
 samba_user_exists() {
-    local user="$1"
-    pdbedit -L 2>/dev/null | cut -d: -f1 | grep -qx "$user"
+    local user="$1" users
+    # Capture first: `pdbedit | ... | grep -q` under pipefail can return 141 (SIGPIPE)
+    # when grep exits early. -F: names may end in "$", which is a regex anchor.
+    users=$(pdbedit -L 2>/dev/null | cut -d: -f1) || true
+    grep -qxF -- "$user" <<< "$users"
 }
 
 ###############################################################################
@@ -79,7 +97,7 @@ add_user() {
     if ! id "$user" >/dev/null 2>&1; then
         echo "Linux user '$user' does not exist."
         echo
-        read -r -p "Create Linux user '$user'? [y/N]: " answer
+        read -r -p "Create Linux user '$user'? [y/N]: " answer || answer=""
 
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             adduser "$user"
@@ -94,6 +112,13 @@ add_user() {
     fi
 
     usermod -aG sambashare "$user"
+
+    if samba_user_exists "$user"; then
+        echo
+        echo "'$user' is already a Samba user - password and account state unchanged."
+        echo "Use '$0 passwd $user' to change the password, '$0 enable $user' to re-enable."
+        return 0
+    fi
 
     echo
     echo "Adding Samba password for '$user'."
