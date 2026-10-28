@@ -108,6 +108,12 @@ systemctl --failed                    # sollte leer sein
 
 Fragt der Boot trotz TPM-Enrollment nach der Passphrase (PCR 7 des Live-Mediums und des installierten Systems können sich unterscheiden): Passphrase tippen, booten, dann `sudo enroll-tpm2`.
 
+Für eine umfassende Prüfung liegt `verify-install.sh` bei (UEFI/NVRAM, Partitionen, ESPs, LUKS/TPM, Pools, Datasets, crypttab/fstab/GRUB, initrd, Dienste, Firewall, Pakete):
+
+```bash
+sudo bash verify-install.sh      # Exit-Code 1 bei mindestens einem FAIL
+```
+
 | Befehl | Wann |
 |---|---|
 | `sudo enroll-tpm2 [PCRS]` | nach dem ersten Boot (falls zurückgestellt), nach Firmware-Update (bei PCR 0,7), Secure-Boot-Änderung, TPM-Reset oder Plattentausch. Löscht alte TPM-Slots, enrollt neu, die Passphrase bleibt |
@@ -140,6 +146,21 @@ Danach Docker auf `data-root: /data/docker` stellen (`/etc/docker/daemon.json`) 
 
 ---
 
+## Prüfscript `verify-install.sh` (rev. 5)
+
+Läuft **nach dem ersten Boot** als root, prüft rund 20 Abschnitte und gibt PASS/WARN/FAIL aus. Gegenüber der Upstream-rev. 4 behoben:
+
+1. **Passt zum gepatchten Installer:** rev. 4 verlangte `After=systemd-cryptsetup.target` (existiert nicht) und hätte auf jeder p1-Installation einen FAIL gemeldet.
+2. **Falsch-negative initrd-Prüfung:** `echo "$GROSS" | grep -q` liefert unter `pipefail` bei großer Eingabe Exit 141 (SIGPIPE). Jetzt Here-Strings.
+3. **bpool-Fallback** konnte nie greifen (Einrückung, by-id-Namen); parst jetzt `zpool status -LP`.
+4. **NVRAM-Eintrag für Platte 2** wird geprüft, weil ihn der Installer p1 nicht mehr erzwingt.
+5. **Ausgabe:** `\EFI\ubuntu\...` aus `efibootmgr` wurde durch `echo -e` zu Steuerzeichen, jetzt `printf %s`.
+6. Kleinere Punkte: `dpkg-query` statt `dpkg -s`, `/boot/efi` nicht gemountet = FAIL, ESP-Inhalte werden verglichen, Extra-Pool- und TPM-Slot-Prüfung für `luks-extra`, genauer Port-22-Test, ausgerichtete Box.
+
+Getestet habe ich nur Syntax und Einzelfälle mit Stub-Programmen, nicht auf einem echten System mit ZFS und TPM. ShellCheck stand in meiner Umgebung nicht zur Verfügung.
+
+---
+
 ## Sicherheitsmodell
 
 **Schützt gegen:**
@@ -158,6 +179,12 @@ Weitere Hinweise: SSH-Passwort-Login nach der Installation auf Schlüssel umstel
 ## Wartung und Fehlerbehebung
 
 **Platte ersetzen:** Das Upstream-README beschreibt den Ablauf nur für das alte Layout. Hier kommt zusätzlich Partition 5 (`luks-data`) und der Pool `dpool` dazu: Partitionstabelle replizieren, `bpool`, `rpool` **und** `dpool` jeweils mit `zpool replace` ersetzen, crypttab und die `rd.luks.name`-UUIDs in `/etc/default/grub` aktualisieren, `enroll-tpm2`, `dracut -f --regenerate-all`, `update-grub`, ESP neu anlegen und `sync-efi`. Vorher an einer Testmaschine durchspielen.
+
+**Boot-Eintrag für Platte 2 fehlt** (Warnung des Installers oder von `verify-install.sh`): Der Mirror bootet dann nur über Platte 1. Eintrag nachlegen (Platte 2 per by-id-Pfad angeben):
+```bash
+sudo efibootmgr -c -g -d /dev/disk/by-id/<platte2> -p 1 -L 'ubuntu (disk 2)' -l '\EFI\ubuntu\shimx64.efi'
+```
+Doppelte alte Einträge entfernst du mit `sudo efibootmgr -B -b <Nummer>`.
 
 **Notfall-Shell beim Boot (dracut):**
 ```bash
@@ -206,4 +233,20 @@ chroot /mnt
 
 ## Herkunft und Lizenz
 
-Basiert auf `FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm` (rev. 9.0). Der Script-Header nennt die Lizenz MIT, die Repo-Seite zeigt widersprüchlich auch Apache-2.0. Prüfe die `LICENSE`-Datei im Original und übernimm den Lizenzhinweis, wenn du das Script weitergibst. **Keine Gewährleistung.**
+Basiert auf `FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm` (rev. 9.0).
+
+**Lizenz dieser Kopie: Apache License 2.0** (Datei `LICENSE`, Wortlaut unverändert).
+
+Das Original ist uneinheitlich: Seine `LICENSE`-Datei ist Apache-2.0 (ohne eingetragenen Urheber, nur die leere Vorlage), sein Script-Header und sein README nannten dagegen MIT. Beide Hinweise sind in der Datei `NOTICE` festgehalten. Beide Lizenzen sind permissiv; ich habe die `LICENSE`-Datei als maßgeblich genommen. Das ist keine Rechtsberatung. Am sauberesten wäre eine Klarstellung durch den Original-Autor.
+
+Beim Weitergeben liegen diese Dateien zusammen:
+
+```
+install-2604-zfs-luks-tpm.sh   # Script mit Lizenz- und Änderungshinweis im Header
+verify-install.sh              # Prüfscript (rev. 5), gleicher Lizenz- und Änderungshinweis
+README.md
+LICENSE                        # Apache-2.0, unverändert
+NOTICE                         # Herkunft, beide Original-Hinweise, Änderungen, dein Name
+```
+
+Vor dem Weitergeben in `NOTICE` bei „Copyright [YEAR] [YOUR NAME]“ Jahr und Namen eintragen. **Keine Gewährleistung.**
