@@ -1,0 +1,27 @@
+Ubuntu Server 26.04 ZFS / LUKS / TPM installer and helper scripts
+
+Source project:
+https://github.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm
+
+This distribution contains modified versions of the installer (based on
+revision 9.0), verify.sh (based on revision 4), and samba-user.sh.
+Changes are described in the source headers and README.md. They include
+firewall setup changes, ZFS/LUKS boot ordering and degraded-boot handling,
+EFI setup, verification fixes, Samba account handling fixes, and updated
+English documentation and download/password instructions.
+
+Licensing notices:
+- LICENSE contains the Apache License, Version 2.0.
+- The original installer header states:
+  "SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select."
+  Its MIT notice is retained; the MIT terms are supplied in LICENSE-MIT.
+- verify.sh and samba-user.sh carry Apache-2.0 per-file identifiers.
+
+The historical repository/per-file license difference is recorded here,
+not resolved by removing or replacing the original installer's MIT notice.
+No claim is made that every file is available under both licenses.
+No new copyright holder or year is inferred from the upstream username.
+Retain any additional upstream copyright and attribution notices supplied
+with the versions you redistribute.
+
+This NOTICE is informational and does not modify either license.
