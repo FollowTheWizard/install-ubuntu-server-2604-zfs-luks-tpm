@@ -12,9 +12,13 @@
 #      (it talks to the live kernel and, under set -e, could abort before dracut/GRUB).
 #      Enabled via ENABLED=yes + ufw.service at first boot; skipped with a warning if the
 #      SSH rule could not be written (never enables deny-all without the SSH rule).
-#   2. zfs-import-dpool.service: After=cryptsetup.target (systemd-cryptsetup.target does
-#      not exist); safe against a race with zfs-import-scan.service.
-#   3. disk-2 NVRAM entry: stale "ubuntu (disk 2)" entries removed, failure is no longer
+#   2. zfs-import-dpool.service & zfs-import-scan.service: with `nofail` in crypttab /
+#      rd.luks.options, systemd-cryptsetup-generator omits `Before=cryptsetup.target`.
+#      Both ZFS import units now explicitly order `After=systemd-cryptsetup@luks\x2d*.service`
+#      and pools use `cachefile=none` so zpool.cache never blocks scan import in dracut.
+#   3. Degraded 1-disk boot: 20s device timeouts on nofail crypttab/fstab/rd.luks entries
+#      so a missing disk times out cleanly and rpool/bpool/dpool force-import degraded.
+#   4. disk-2 NVRAM entry: stale "ubuntu (disk 2)" entries removed, failure is no longer
 #      fatal (it used to abort before enroll-tpm2 was written and before teardown);
 #      a warning with the manual command is printed at the end instead.
 #
@@ -371,7 +375,7 @@ udevadm settle || true
 assert_free "$BP1" "$BP2"
 echo "→ creating $BPOOL"
 zpool create -f \
-  -o ashift=12 -o autotrim=on -o compatibility=grub2 -o cachefile=/etc/zfs/zpool.cache \
+  -o ashift=12 -o autotrim=on -o compatibility=grub2 -o cachefile=none \
   -O devices=off -O acltype=posixacl -O xattr=sa -O compression=lz4 \
   -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=/boot \
   -R $T $BPOOL mirror "$BP1" "$BP2"
@@ -379,7 +383,7 @@ zpool create -f \
 assert_free /dev/mapper/luks-root1 /dev/mapper/luks-root2
 echo "→ creating $RPOOL (64G OS)"
 zpool create -f \
-  -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
+  -o ashift=12 -o autotrim=on -o cachefile=none \
   -O acltype=posixacl -O xattr=sa -O dnodesize=auto -O compression=zstd \
   -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=/ \
   -R $T $RPOOL mirror /dev/mapper/luks-root1 /dev/mapper/luks-root2
@@ -388,7 +392,7 @@ zpool create -f \
 assert_free /dev/mapper/luks-data1 /dev/mapper/luks-data2
 echo "→ creating $DPOOL (data, ${DATA_MB}M)"
 zpool create -f \
-  -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
+  -o ashift=12 -o autotrim=on -o cachefile=none \
   -O acltype=posixacl -O xattr=sa -O dnodesize=auto -O compression=zstd \
   -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=none \
   -R $T $DPOOL mirror /dev/mapper/luks-data1 /dev/mapper/luks-data2
@@ -397,6 +401,7 @@ zpool create -f \
 zfs create -o canmount=off    -o mountpoint=none  $RPOOL/ROOT
 zfs create -o canmount=noauto -o mountpoint=/     $RPOOL/ROOT/ubuntu
 zfs mount $RPOOL/ROOT/ubuntu
+zpool set bootfs=$RPOOL/ROOT/ubuntu $RPOOL
 
 zfs create -o canmount=off                $RPOOL/var
 zfs create -o canmount=off                $RPOOL/var/lib
@@ -421,7 +426,7 @@ if [[ -n $XP ]]; then
   assert_free /dev/mapper/luks-extra
   echo "→ creating $EXTRA_POOL (single disk, no redundancy)"
   zpool create -f \
-    -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
+    -o ashift=12 -o autotrim=on -o cachefile=none \
     -O acltype=posixacl -O xattr=sa -O compression=zstd -O relatime=on \
     -O mountpoint="$EXTRA_MNT" -R $T "$EXTRA_POOL" /dev/mapper/luks-extra
 fi
@@ -459,28 +464,28 @@ cat > $T/etc/fstab <<EOF
 $BPOOL/BOOT/ubuntu  /boot       zfs   nodev,relatime,x-systemd.requires=zfs-import-bpool.service  0 0
 $RPOOL/var/log      /var/log    zfs   nodev,relatime  0 0
 $RPOOL/var/spool    /var/spool  zfs   nodev,relatime  0 0
-PARTUUID=$PU_ESP1   /boot/efi   vfat  umask=0077,nofail,x-systemd.requires-mounts-for=/boot  0 1
-PARTUUID=$PU_ESP2   /boot/efi2  vfat  umask=0077,nofail,x-systemd.requires-mounts-for=/boot  0 1
-/dev/mapper/swap1   none        swap  sw,nofail  0 0
-/dev/mapper/swap2   none        swap  sw,nofail  0 0
+PARTUUID=$PU_ESP1   /boot/efi   vfat  umask=0077,nofail,x-systemd.device-timeout=20s,x-systemd.requires-mounts-for=/boot  0 1
+PARTUUID=$PU_ESP2   /boot/efi2  vfat  umask=0077,nofail,x-systemd.device-timeout=20s,x-systemd.requires-mounts-for=/boot  0 1
+/dev/mapper/swap1   none        swap  sw,nofail,x-systemd.device-timeout=20s  0 0
+/dev/mapper/swap2   none        swap  sw,nofail,x-systemd.device-timeout=20s  0 0
 EOF
 # dpool/home and dpool/data use ZFS-native mountpoints — no fstab needed.
 
 cat > $T/etc/crypttab <<EOF
-luks-root1  UUID=$U_RP1       none          luks,discard,tpm2-device=auto,x-initrd.attach,nofail
-luks-root2  UUID=$U_RP2       none          luks,discard,tpm2-device=auto,x-initrd.attach,nofail
-luks-data1  UUID=$U_DP1       none          luks,discard,tpm2-device=auto,nofail
-luks-data2  UUID=$U_DP2       none          luks,discard,tpm2-device=auto,nofail
-swap1       PARTUUID=$PU_SW1  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail
-swap2       PARTUUID=$PU_SW2  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail
+luks-root1  UUID=$U_RP1       none          luks,discard,tpm2-device=auto,x-initrd.attach,nofail,x-systemd.device-timeout=20s
+luks-root2  UUID=$U_RP2       none          luks,discard,tpm2-device=auto,x-initrd.attach,nofail,x-systemd.device-timeout=20s
+luks-data1  UUID=$U_DP1       none          luks,discard,tpm2-device=auto,nofail,x-systemd.device-timeout=20s
+luks-data2  UUID=$U_DP2       none          luks,discard,tpm2-device=auto,nofail,x-systemd.device-timeout=20s
+swap1       PARTUUID=$PU_SW1  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail,x-systemd.device-timeout=20s
+swap2       PARTUUID=$PU_SW2  /dev/urandom  plain,swap,cipher=aes-xts-plain64,size=512,discard,nofail,x-systemd.device-timeout=20s
 EOF
 [[ -n $XP ]] && echo \
-  "luks-extra  UUID=$(cryptsetup luksUUID "$XP")  none  luks,discard,tpm2-device=auto,nofail" \
+  "luks-extra  UUID=$(cryptsetup luksUUID "$XP")  none  luks,discard,tpm2-device=auto,nofail,x-systemd.device-timeout=20s" \
   >> $T/etc/crypttab
 
 # dracut kernel cmdline — unlock rpool members in initramfs; data pool unlock happens later
 RD_LUKS="rd.luks.name=$U_RP1=luks-root1 rd.luks.name=$U_RP2=luks-root2"
-RD_LUKS+=" rd.luks.options=discard,tpm2-device=auto,nofail"
+RD_LUKS+=" rd.luks.options=discard,tpm2-device=auto,nofail,x-systemd.device-timeout=20s"
 
 # ═════════════════════════ 10. CHROOT ═════════════════════════
 for fs in dev proc sys; do mount --rbind /$fs $T/$fs; mount --make-rslave $T/$fs; done
@@ -524,6 +529,8 @@ cat > /etc/dracut.conf.d/90-zfs-luks-tpm.conf <<'EOS'
 hostonly="no"
 hostonly_cmdline="no"
 add_dracutmodules+=" zfs crypt tpm2-tss "
+force_drivers+=" zfs "
+install_items+=" /etc/hostid /etc/crypttab /etc/systemd/system/zfs-import-scan.service.d/override.conf /etc/systemd/system/zfs-import-cache.service.d/override.conf "
 compress="zstd"
 EOS
 
@@ -537,31 +544,79 @@ apt-get install -y --no-install-recommends \
   rsync curl less vim-tiny bash-completion zstd ufw
 
 # GRUB
-sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"root=ZFS=$RPOOL/ROOT/ubuntu $RD_LUKS\"|" \
+sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"root=ZFS=$RPOOL/ROOT/ubuntu zfs_force=1 $RD_LUKS\"|" \
   /etc/default/grub
 sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=""|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT_STYLE=.*|GRUB_TIMEOUT_STYLE=menu|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=3|' /etc/default/grub
 grep -q '^GRUB_TERMINAL' /etc/default/grub || echo 'GRUB_TERMINAL=console' >> /etc/default/grub
 
+# ── zfs-import-scan override (initramfs + real root) ──
+# With `nofail` on luks-root1/2 and luks-data1/2, systemd-cryptsetup-generator omits
+# `Before=cryptsetup.target`, so `After=cryptsetup.target` alone does NOT wait for
+# LUKS unlock. Order explicitly after the per-device cryptsetup services and ensure
+# rpool is imported (including degraded 1-disk boot) before sysroot.mount runs.
+mkdir -p /etc/systemd/system/zfs-import-scan.service.d
+cat > /etc/systemd/system/zfs-import-scan.service.d/override.conf <<'EOS'
+[Unit]
+After=cryptsetup.target
+After=systemd-cryptsetup@luks\x2droot1.service
+After=systemd-cryptsetup@luks\x2droot2.service
+After=systemd-cryptsetup@luks\x2ddata1.service
+After=systemd-cryptsetup@luks\x2ddata2.service
+After=systemd-cryptsetup@luks\x2dextra.service
+ConditionFileNotEmpty=
+ConditionPathIsDirectory=
+
+[Service]
+ExecStartPre=/sbin/modprobe zfs
+ExecStart=
+ExecStart=/bin/sh -c '\
+  zpool import -aN -o cachefile=none $ZPOOL_IMPORT_OPTS 2>/dev/null || true; \
+  if ! zpool list rpool >/dev/null 2>&1; then \
+    for i in $(seq 1 20); do \
+      [ -e /dev/mapper/luks-root1 ] || [ -e /dev/mapper/luks-root2 ] && break; \
+      sleep 1; \
+    done; \
+    for i in $(seq 1 10); do \
+      zpool import -f -N -o cachefile=none rpool 2>/dev/null && break; \
+      zpool list rpool >/dev/null 2>&1 && break; \
+      sleep 1; \
+    done; \
+  fi; \
+  zpool list rpool >/dev/null 2>&1'
+EOS
+
+# Prevent zfs-import-cache.service from racing with scan import inside initramfs
+mkdir -p /etc/systemd/system/zfs-import-cache.service.d
+cat > /etc/systemd/system/zfs-import-cache.service.d/override.conf <<'EOS'
+[Unit]
+ConditionPathExists=/nonexistent
+EOS
+
 # ── bpool import service ──
 cat > /etc/systemd/system/zfs-import-bpool.service <<'EOS'
 [Unit]
 Description=Import ZFS boot pool (bpool)
 DefaultDependencies=no
+After=systemd-udev-settle.service
+After=systemd-modules-load.service
 Before=zfs-import-scan.service
 Before=zfs-import-cache.service
+Before=zfs-mount.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/sbin/modprobe zfs
 ExecStart=/bin/sh -c '\
   zpool list bpool >/dev/null 2>&1 && exit 0; \
   for i in $(seq 1 20); do \
     zpool import -f -N -o cachefile=none bpool 2>/dev/null && exit 0; \
+    zpool list bpool >/dev/null 2>&1 && exit 0; \
     sleep 1; \
   done; \
-  zpool import -f -N -o cachefile=none bpool'
+  zpool list bpool >/dev/null 2>&1 || zpool import -f -N -o cachefile=none bpool'
 
 [Install]
 WantedBy=zfs-import.target
@@ -573,14 +628,22 @@ cat > /etc/systemd/system/zfs-import-dpool.service <<'EOS'
 Description=Import ZFS data pool (dpool)
 DefaultDependencies=no
 After=cryptsetup.target
+After=systemd-cryptsetup@luks\x2ddata1.service
+After=systemd-cryptsetup@luks\x2ddata2.service
+After=systemd-cryptsetup@luks\x2dextra.service
 Before=zfs-import-scan.service
 Before=zfs-mount.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/sbin/modprobe zfs
 ExecStart=/bin/sh -c '\
   zpool list dpool >/dev/null 2>&1 && exit 0; \
+  for i in $(seq 1 20); do \
+    [ -e /dev/mapper/luks-data1 ] || [ -e /dev/mapper/luks-data2 ] && break; \
+    sleep 1; \
+  done; \
   [ -e /dev/mapper/luks-data1 ] || [ -e /dev/mapper/luks-data2 ] || exit 0; \
   for i in $(seq 1 20); do \
     zpool import -f -N -o cachefile=none dpool 2>/dev/null && exit 0; \
@@ -622,8 +685,22 @@ else
   echo "WARNING: could not write ufw rules - firewall NOT enabled (set it up after first boot)"
 fi
 
+# Keep zpool.cache empty so dracut never embeds a stale cachefile
+mkdir -p /etc/zfs
+: > /etc/zfs/zpool.cache
+
 # initrd
 dracut -f --regenerate-all
+
+# Verify generated initrd contains required ZFS + LUKS + override artifacts
+for initrd_img in /boot/initrd.img-* /boot/initramfs-*.img; do
+  [[ -f $initrd_img ]] || continue
+  initrd_files=$(lsinitrd "$initrd_img" 2>/dev/null || true)
+  grep -q 'zfs-import-scan\.service\.d/override\.conf' <<< "$initrd_files" \
+    || { echo "ERROR: $initrd_img missing zfs-import-scan override.conf"; exit 1; }
+  grep -q 'etc/hostid' <<< "$initrd_files" \
+    || { echo "ERROR: $initrd_img missing /etc/hostid"; exit 1; }
+done
 
 # GRUB install
 export ZPOOL_VDEV_NAME_PATH=YES

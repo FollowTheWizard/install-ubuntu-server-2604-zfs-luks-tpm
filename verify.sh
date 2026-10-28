@@ -602,6 +602,13 @@ if [[ -f $DPOOL_UNIT ]]; then
     fail "dpool unit missing After=cryptsetup.target"
   fi
 
+  if grep -q 'systemd-cryptsetup@luks\\x2ddata1\.service' "$DPOOL_UNIT" \
+     && grep -q 'systemd-cryptsetup@luks\\x2ddata2\.service' "$DPOOL_UNIT"; then
+    ok "dpool unit waits for both systemd-cryptsetup@luks-data1/2 services (nofail-safe)"
+  else
+    warn "dpool unit missing explicit After=systemd-cryptsetup@luks-data1/2.service"
+  fi
+
   grep -q '/dev/mapper/luks-data1' "$DPOOL_UNIT" && grep -q '/dev/mapper/luks-data2' "$DPOOL_UNIT" \
     && ok "dpool unit checks for either luks-data1/luks-data2 mapper" \
     || fail "dpool unit does not check both data mapper names"
@@ -613,6 +620,19 @@ if [[ -f $DPOOL_UNIT ]]; then
   fi
 else
   fail "$DPOOL_UNIT NOT found"
+fi
+
+SCAN_OVERRIDE=/etc/systemd/system/zfs-import-scan.service.d/override.conf
+if [[ -f $SCAN_OVERRIDE ]]; then
+  ok "$SCAN_OVERRIDE exists"
+  if grep -q 'systemd-cryptsetup@luks\\x2droot1\.service' "$SCAN_OVERRIDE" \
+     && grep -q 'systemd-cryptsetup@luks\\x2droot2\.service' "$SCAN_OVERRIDE"; then
+    ok "zfs-import-scan override waits for systemd-cryptsetup@luks-root1/2 (nofail-safe)"
+  else
+    fail "zfs-import-scan override missing After=systemd-cryptsetup@luks-root1/2.service"
+  fi
+else
+  fail "$SCAN_OVERRIDE NOT found (nofail race with sysroot.mount in initramfs)"
 fi
 
 # =============================================================================
