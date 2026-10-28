@@ -3,10 +3,12 @@
 #  Ubuntu 26.04 LTS (resolute) — interactive installer  (rev. 9.0-p1, patched)
 #  2-disk ZFS mirror · LUKS2 FDE · unlock by passphrase OR TPM2 · dracut · GRUB/UEFI
 #  LAYOUT: 64 GiB OS (rpool) + remaining data (dpool), both mirrored on LUKS2
-#  SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select.
+#  SPDX-License-Identifier: MIT
+#  See LICENSE-MIT and NOTICE. NO WARRANTY. DESTROYS DATA on the disks you select.
 #
 #  PATCHED COPY (p1) of FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm rev. 9.0
-#  (original script header says MIT; keep the original license notice when redistributing).
+#  Original MIT notice retained; repository Apache-2.0 terms are in LICENSE.
+#  See NOTICE for attribution and the historical per-file license difference.
 #  Changes vs. rev. 9.0 — NOT tested on hardware:
 #   1. ufw: rules are only WRITTEN in the chroot; `ufw enable` is no longer run there
 #      (it talks to the live kernel and, under set -e, could abort before dracut/GRUB).
