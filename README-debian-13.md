@@ -10,9 +10,8 @@ redundant EFI partitions, and Debian's dracut-based boot setup.
 
 ## Requirements
 
-- Debian 13 live media, booted in UEFI mode. Temporarily disable Secure Boot in
-  firmware for the live session so its locally built ZFS DKMS module can load;
-  re-enable Secure Boot before the installed system's first boot.
+- Debian 13 live media, booted in UEFI mode with Secure Boot temporarily disabled.
+  Re-enable Secure Boot in firmware before the installed system's first boot.
 - Two amd64 disks, each large enough for the 64 GiB OS pool plus the data pool.
 - Working network access and root privileges.
 - TPM 2.0 is optional; without one, enter the LUKS passphrase at each boot.
@@ -27,9 +26,8 @@ Trixie's stable repositories to avoid mixing release suites during installation.
 ## Install
 
 1. Temporarily disable Secure Boot in firmware, then boot the Debian 13 GNOME Live
-   ISO in UEFI mode and connect to the network. The installer needs the live
-   session's ZFS module; under Secure Boot its new DKMS signing key is not enrolled
-   yet. Re-enable Secure Boot before the first boot from the installed disks.
+   ISO in UEFI mode and connect to the network. The live installer must load its
+   locally built ZFS DKMS module to create and mount the pools.
 2. Download the installer from this repository and run it as root:
 
    ```bash
@@ -40,10 +38,10 @@ Trixie's stable repositories to avoid mixing release suites during installation.
 3. Select the two install disks, configure the user and system, review the summary,
    and type `YES` only after verifying the disk identities.
 4. During the final stage, set a temporary password when `mokutil` requests it.
-   Re-enable Secure Boot in firmware before rebooting. At the next boot, choose
+   Before rebooting, re-enable Secure Boot in firmware. At the next boot, choose
    **Enroll MOK** in MokManager and enter that password. Debian builds its ZFS
-   kernel module with DKMS; the signing key must be enrolled before Secure Boot
-   will allow the kernel to load ZFS and mount the root pool.
+   kernel module with DKMS; the installed system's signing key must be enrolled
+   before Secure Boot will allow the kernel to load ZFS and mount the root pool.
 5. Enter the LUKS passphrase at first boot, then enroll TPM2 after logging in:
 
    ```bash
@@ -77,3 +75,16 @@ sudo zpool scrub rpool bpool dpool
 
 `sync-efi` copies bootloader updates to the second EFI partition. Keep the LUKS
 passphrase offline; TPM unlock is not a replacement for a recovery passphrase.
+
+## Secure Boot sequence
+
+The installer requires UEFI, but intentionally requires Secure Boot to be off in
+the live session. It aborts if Secure Boot is on because the live session's ZFS
+DKMS module is signed with a key not yet trusted by firmware, so the module cannot
+load. The script checks this before touching the target disks.
+
+The installed system has its own DKMS signing key. The installer queues that
+key for MOK enrollment before exiting. Re-enable Secure Boot in firmware before
+booting from the installed disks, then confirm **Enroll MOK** in MokManager using
+the temporary password you set during installation. This enables Secure Boot for
+the installed system without requiring the live session's key to be trusted.

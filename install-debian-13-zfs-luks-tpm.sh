@@ -5,9 +5,8 @@
 #  LAYOUT: 64 GiB OS (rpool) + remaining data (dpool), both mirrored on LUKS2
 #  SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select.
 #
-#  Boot the Debian 13 live ISO in UEFI mode (Secure Boot temporarily off) →
-#     re-enable Secure Boot before the first installed boot.
-#     Connect to the network, then →
+#  Boot the Debian 13 live ISO in UEFI mode with Secure Boot temporarily disabled →
+#     run installer; re-enable Secure Boot before the first installed boot.
 #     sudo -i ; bash install-debian-13-zfs-luks-tpm.sh
 #  Safe to re-run at any point: releases target disks from mounts/pools/holders itself.
 #
@@ -54,14 +53,12 @@ secure_boot_enabled() {
   return 2
 }
 
-LIVE_SECURE_BOOT=no
 if secure_boot_enabled; then
-  LIVE_SECURE_BOOT=yes
+  die "Secure Boot is enabled in the live session. Disable it in firmware for installation so the live DKMS-built ZFS module can load; re-enable it before the first boot from the installed disks."
 else
   rc=$?
   (( rc == 2 )) && die "cannot verify Secure Boot state (no efivar and no mokutil)"
-  echo "WARNING: Secure Boot is disabled in the live session."
-  echo "         Re-enable it in firmware before the installed system's first boot."
+  echo "Secure Boot is disabled in the live session; the installed system's DKMS MOK will be enrolled before reboot."
 fi
 
 HAVE_TPM=no; [[ -c /dev/tpmrm0 ]] && HAVE_TPM=yes
@@ -193,10 +190,7 @@ if ! modinfo -k "$LIVE_KERNEL" zfs >/dev/null 2>&1; then
   die "ZFS DKMS did not build for live kernel $LIVE_KERNEL; inspect /var/lib/dkms/zfs/*/build/make.log"
 fi
 if ! modprobe zfs; then
-  if [[ $LIVE_SECURE_BOOT == yes ]]; then
-    die "could not load ZFS into live kernel $LIVE_KERNEL while Secure Boot is enabled. Boot the live ISO with Secure Boot temporarily disabled, rerun the installer, then re-enable Secure Boot before the installed system's first boot and enroll its DKMS MOK."
-  fi
-  die "could not load ZFS into live kernel $LIVE_KERNEL; inspect DKMS build logs and kernel logs"
+  die "could not load ZFS into live kernel $LIVE_KERNEL even though Secure Boot is disabled. The installer cannot proceed and no target disks have been modified. Inspect 'modprobe zfs' output and /var/lib/dkms/zfs/*/build/make.log."
 fi
 zgenhostid -f
 
@@ -673,7 +667,7 @@ ln -sf ../run/systemd/resolve/stub-resolv.conf $T/etc/resolv.conf
 
 DKMS_MOK="$T/var/lib/dkms/mok.pub"
 [[ -s $DKMS_MOK ]] || die "DKMS MOK certificate missing at $DKMS_MOK; cannot boot signed ZFS under Secure Boot"
-echo "→ scheduling DKMS MOK enrollment (set a temporary password, re-enable Secure Boot, then confirm it in MokManager on reboot)"
+echo "→ scheduling DKMS MOK enrollment (set a temporary password, then confirm it in MokManager on reboot)"
 mokutil --import "$DKMS_MOK"
 
 efibootmgr -c -g -d "$(readlink -f "$DISK2")" -p 1 \
@@ -775,7 +769,7 @@ cat <<EOF
  KEEP THE PASSPHRASE OFFLINE.
  It is the only way in if the TPM refuses to unseal.
 
- NOTE: MokManager must enroll the DKMS key before Debian can load its ZFS module.
+ NOTE: MokManager must enroll the installed system's DKMS key before Debian can load its ZFS module.
        Keep the temporary MOK password available until the enrollment is confirmed.
 EOF
 hr

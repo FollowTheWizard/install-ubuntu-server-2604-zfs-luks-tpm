@@ -1,6 +1,18 @@
-# Ubuntu Server 26.04 LTS — ZFS mirror, LUKS2 and TPM2 unlock
+# Ubuntu Server 26.04 LTS — installation options
 
-Interactive installer for Ubuntu Server 26.04 LTS (`resolute`) on two disks: mirrored ZFS boot, root and data pools, LUKS2 encryption for root and data, and TPM2 unlock with a passphrase fallback. Boot uses UEFI, shim/GRUB and a dracut initramfs.
+## Recommended: encrypted ext4 root with separate ZFS storage
+
+For Secure Boot kept enabled, TPM2 unlock, and ZFS used only for data, see the
+[Ubuntu 26.04 encrypted-root guide](./README-ubuntu-26.04-luks-root.md) and its
+[new installer](./install-ubuntu-2604-luks-root-zfs-storage.sh). This is a
+separate, custom mirrored-root installation path; it is destructive and has not
+been hardware-validated.
+
+## Legacy Ubuntu ZFS-root installer
+
+The instructions below describe the older layout: ZFS boot, root and data pools
+with LUKS2 encryption and TPM2 unlock. They do not describe the recommended
+encrypted ext4 root layout above.
 
 Based on [FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm](https://github.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm), revision 9.0, with the changes described below.
 
@@ -43,7 +55,7 @@ Select the two disks carefully, review the summary, and enter `YES` only when re
 
 ## Debian 13 installation flow
 
-The Debian installer is separate from the Ubuntu script above. Use the **Debian 13 amd64 GNOME Live ISO**, booted in UEFI mode with Secure Boot **temporarily disabled**. The live installer must load its locally built ZFS module before the installed system's DKMS key has been enrolled. Choose the live-session option, connect to the network, and open a terminal. **Do not use the Debian netinst installer**: the script expects a running live environment, not the Debian Installer.
+The Debian installer is separate from the Ubuntu script above. Use the **Debian 13 amd64 GNOME Live ISO**, booted in UEFI mode with Secure Boot temporarily disabled. The live session needs to load its DKMS-built ZFS module to create and mount the pools. Choose the live-session option, connect to the network, and open a terminal. **Do not use the Debian netinst installer**: the script expects a running live environment, not the Debian Installer.
 
 Install the download tools, fetch and inspect the Debian-specific script, then run it:
 
@@ -60,7 +72,7 @@ bash -n install-debian-13-zfs-luks-tpm.sh
 sudo bash install-debian-13-zfs-luks-tpm.sh
 ```
 
-Verify both disk identities carefully; entering `YES` erases both selected disks. When prompted near the end, set a temporary MOK password. Re-enable Secure Boot in firmware before rebooting. On the first reboot, confirm **Enroll MOK** in MokManager and enter that temporary password so Secure Boot can load Debian's locally signed ZFS DKMS module. Then enter the LUKS passphrase at boot. After logging in, enroll TPM2 (if present) with `sudo enroll-tpm2 7`; this is separate from MOK enrollment. See the [Debian-specific guide](./README-debian-13.md) for details.
+Verify both disk identities carefully; entering `YES` erases both selected disks. When prompted near the end, set a temporary MOK password. Before rebooting, re-enable Secure Boot in firmware. On the first boot, confirm **Enroll MOK** in MokManager and enter that temporary password so Secure Boot can load Debian's locally signed ZFS DKMS module. Then enter the LUKS passphrase at boot. After logging in, enroll TPM2 (if present) with `sudo enroll-tpm2 7`; this is separate from MOK enrollment. See the [Debian-specific guide](./README-debian-13.md).
 
 ## Installation prompts
 
