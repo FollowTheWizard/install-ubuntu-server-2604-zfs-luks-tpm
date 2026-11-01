@@ -4,6 +4,8 @@ Interactive installer for Ubuntu Server 26.04 LTS (`resolute`) on two disks: mir
 
 Based on [FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm](https://github.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm), revision 9.0, with the changes described below.
 
+For the Debian 13 (Trixie) version, use the separate [Debian installer](./install-debian-13-zfs-luks-tpm.sh) and [Debian instructions](./README-debian-13.md).
+
 > **Destructive and not hardware-validated:** the installer erases both selected disks, including on repeat runs. Back up your data first. The current boot changes have had Bash syntax checks, not a complete installation or boot test. Do not treat a successful installer run as proof of single-disk bootability.
 
 ## Requirements
@@ -38,6 +40,27 @@ This downloads the **published `main` branch**, not uncommitted changes in your 
 Select the two disks carefully, review the summary, and enter `YES` only when ready to erase them. The installer then asks for the LUKS passphrase. Remove the installation medium and reboot after completion.
 
 **Never rerun this installer as a repair or update tool. Repeat runs erase the target disks again.**
+
+## Debian 13 installation flow
+
+The Debian installer is separate from the Ubuntu script above. Use the **Debian 13 amd64 GNOME Live ISO**, booted in UEFI mode with Secure Boot enabled. Choose the live-session option, connect to the network, and open a terminal. **Do not use the Debian netinst installer**: the script expects a running live environment, not the Debian Installer.
+
+Install the download tools, fetch and inspect the Debian-specific script, then run it:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y curl ca-certificates
+
+curl --fail --show-error --location \
+  --output install-debian-13-zfs-luks-tpm.sh \
+  https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-debian-13-zfs-luks-tpm.sh
+
+less install-debian-13-zfs-luks-tpm.sh
+bash -n install-debian-13-zfs-luks-tpm.sh
+sudo bash install-debian-13-zfs-luks-tpm.sh
+```
+
+Verify both disk identities carefully; entering `YES` erases both selected disks. When prompted near the end, set a temporary MOK password. On the first reboot, confirm **Enroll MOK** in MokManager and enter that temporary password so Secure Boot can load Debian's locally signed ZFS DKMS module. Then enter the LUKS passphrase at boot. After logging in, enroll TPM2 (if present) with `sudo enroll-tpm2 7`; this is separate from MOK enrollment. See the [Debian-specific guide](./README-debian-13.md) for details.
 
 ## Installation prompts
 
