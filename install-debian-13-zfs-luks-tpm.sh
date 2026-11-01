@@ -5,12 +5,14 @@
 #  LAYOUT: 64 GiB OS (rpool) + remaining data (dpool), both mirrored on LUKS2
 #  SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select.
 #
-#  Boot the Debian 13 live ISO in UEFI mode with Secure Boot enabled and network up →
+#  Boot the Debian 13 live ISO in UEFI mode (Secure Boot temporarily off) →
+#     re-enable Secure Boot before the first installed boot.
+#     Connect to the network, then →
 #     sudo -i ; bash install-debian-13-zfs-luks-tpm.sh
 #  Safe to re-run at any point: releases target disks from mounts/pools/holders itself.
 #
-#  Debian-specific: ZFS kernel modules are built by DKMS and signed with a local MOK.
-#                   The installer queues MOK enrollment before reboot.
+#  Debian-specific: live and installed ZFS modules are built by DKMS.
+#                   The installed system's signing key is enrolled before reboot.
 # =============================================================================
 set -eu
 # pipefail is deliberately NOT set: helpers pipe commands that legitimately return
@@ -36,7 +38,7 @@ ask_secret() {
     REPLY=$a; return; done; }
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo -i)"
-[[ -d /sys/firmware/efi ]] || die "not booted in UEFI mode — enable UEFI and Secure Boot in firmware"
+[[ -d /sys/firmware/efi ]] || die "not booted in UEFI mode — enable UEFI in firmware"
 
 secure_boot_enabled() {
   local f sb
@@ -52,12 +54,14 @@ secure_boot_enabled() {
   return 2
 }
 
+LIVE_SECURE_BOOT=no
 if secure_boot_enabled; then
-  :
+  LIVE_SECURE_BOOT=yes
 else
   rc=$?
   (( rc == 2 )) && die "cannot verify Secure Boot state (no efivar and no mokutil)"
-  die "Secure Boot is disabled — enable it in firmware (required for TPM PCR policy)"
+  echo "WARNING: Secure Boot is disabled in the live session."
+  echo "         Re-enable it in firmware before the installed system's first boot."
 fi
 
 HAVE_TPM=no; [[ -c /dev/tpmrm0 ]] && HAVE_TPM=yes
@@ -181,9 +185,19 @@ deb $SECURITY_MIRROR $SUITE-security main contrib non-free-firmware
 EOF
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  debootstrap gdisk zfsutils-linux cryptsetup systemd-cryptsetup \
+  "linux-headers-$(uname -r)" build-essential debootstrap gdisk \
+  zfs-dkms zfsutils-linux cryptsetup systemd-cryptsetup \
   tpm2-tools dosfstools efibootmgr rsync util-linux mokutil lvm2 mdadm
-modprobe zfs
+LIVE_KERNEL=$(uname -r)
+if ! modinfo -k "$LIVE_KERNEL" zfs >/dev/null 2>&1; then
+  die "ZFS DKMS did not build for live kernel $LIVE_KERNEL; inspect /var/lib/dkms/zfs/*/build/make.log"
+fi
+if ! modprobe zfs; then
+  if [[ $LIVE_SECURE_BOOT == yes ]]; then
+    die "could not load ZFS into live kernel $LIVE_KERNEL while Secure Boot is enabled. Boot the live ISO with Secure Boot temporarily disabled, rerun the installer, then re-enable Secure Boot before the installed system's first boot and enroll its DKMS MOK."
+  fi
+  die "could not load ZFS into live kernel $LIVE_KERNEL; inspect DKMS build logs and kernel logs"
+fi
 zgenhostid -f
 
 # ─── helpers ───
@@ -505,6 +519,8 @@ compress="zstd"
 EOS
 
 apt-get install -y --no-install-recommends dracut zfs-dracut
+apt-get install -y --no-install-recommends dkms openssl
+dkms generate_mok
 
 apt-get install -y --no-install-recommends \
   linux-image-amd64 linux-headers-amd64 zfs-dkms zfsutils-linux zfs-zed \
@@ -657,7 +673,7 @@ ln -sf ../run/systemd/resolve/stub-resolv.conf $T/etc/resolv.conf
 
 DKMS_MOK="$T/var/lib/dkms/mok.pub"
 [[ -s $DKMS_MOK ]] || die "DKMS MOK certificate missing at $DKMS_MOK; cannot boot signed ZFS under Secure Boot"
-echo "→ scheduling DKMS MOK enrollment (set a temporary password, then confirm it in MokManager on reboot)"
+echo "→ scheduling DKMS MOK enrollment (set a temporary password, re-enable Secure Boot, then confirm it in MokManager on reboot)"
 mokutil --import "$DKMS_MOK"
 
 efibootmgr -c -g -d "$(readlink -f "$DISK2")" -p 1 \

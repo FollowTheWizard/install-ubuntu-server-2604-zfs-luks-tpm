@@ -10,7 +10,9 @@ redundant EFI partitions, and Debian's dracut-based boot setup.
 
 ## Requirements
 
-- Debian 13 live media, booted in UEFI mode with Secure Boot enabled.
+- Debian 13 live media, booted in UEFI mode. Temporarily disable Secure Boot in
+  firmware for the live session so its locally built ZFS DKMS module can load;
+  re-enable Secure Boot before the installed system's first boot.
 - Two amd64 disks, each large enough for the 64 GiB OS pool plus the data pool.
 - Working network access and root privileges.
 - TPM 2.0 is optional; without one, enter the LUKS passphrase at each boot.
@@ -24,7 +26,10 @@ Trixie's stable repositories to avoid mixing release suites during installation.
 
 ## Install
 
-1. Boot the Debian 13 live ISO with Secure Boot enabled and connect to the network.
+1. Temporarily disable Secure Boot in firmware, then boot the Debian 13 GNOME Live
+   ISO in UEFI mode and connect to the network. The installer needs the live
+   session's ZFS module; under Secure Boot its new DKMS signing key is not enrolled
+   yet. Re-enable Secure Boot before the first boot from the installed disks.
 2. Download the installer from this repository and run it as root:
 
    ```bash
@@ -35,9 +40,10 @@ Trixie's stable repositories to avoid mixing release suites during installation.
 3. Select the two install disks, configure the user and system, review the summary,
    and type `YES` only after verifying the disk identities.
 4. During the final stage, set a temporary password when `mokutil` requests it.
-   At the next boot, choose **Enroll MOK** in MokManager and enter that password.
-   Debian builds its ZFS kernel module with DKMS; the signing key must be enrolled
-   before Secure Boot will allow the kernel to load ZFS and mount the root pool.
+   Re-enable Secure Boot in firmware before rebooting. At the next boot, choose
+   **Enroll MOK** in MokManager and enter that password. Debian builds its ZFS
+   kernel module with DKMS; the signing key must be enrolled before Secure Boot
+   will allow the kernel to load ZFS and mount the root pool.
 5. Enter the LUKS passphrase at first boot, then enroll TPM2 after logging in:
 
    ```bash

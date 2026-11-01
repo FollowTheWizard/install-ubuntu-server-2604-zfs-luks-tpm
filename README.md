@@ -43,7 +43,7 @@ Select the two disks carefully, review the summary, and enter `YES` only when re
 
 ## Debian 13 installation flow
 
-The Debian installer is separate from the Ubuntu script above. Use the **Debian 13 amd64 GNOME Live ISO**, booted in UEFI mode with Secure Boot enabled. Choose the live-session option, connect to the network, and open a terminal. **Do not use the Debian netinst installer**: the script expects a running live environment, not the Debian Installer.
+The Debian installer is separate from the Ubuntu script above. Use the **Debian 13 amd64 GNOME Live ISO**, booted in UEFI mode with Secure Boot **temporarily disabled**. The live installer must load its locally built ZFS module before the installed system's DKMS key has been enrolled. Choose the live-session option, connect to the network, and open a terminal. **Do not use the Debian netinst installer**: the script expects a running live environment, not the Debian Installer.
 
 Install the download tools, fetch and inspect the Debian-specific script, then run it:
 
@@ -60,7 +60,7 @@ bash -n install-debian-13-zfs-luks-tpm.sh
 sudo bash install-debian-13-zfs-luks-tpm.sh
 ```
 
-Verify both disk identities carefully; entering `YES` erases both selected disks. When prompted near the end, set a temporary MOK password. On the first reboot, confirm **Enroll MOK** in MokManager and enter that temporary password so Secure Boot can load Debian's locally signed ZFS DKMS module. Then enter the LUKS passphrase at boot. After logging in, enroll TPM2 (if present) with `sudo enroll-tpm2 7`; this is separate from MOK enrollment. See the [Debian-specific guide](./README-debian-13.md) for details.
+Verify both disk identities carefully; entering `YES` erases both selected disks. When prompted near the end, set a temporary MOK password. Re-enable Secure Boot in firmware before rebooting. On the first reboot, confirm **Enroll MOK** in MokManager and enter that temporary password so Secure Boot can load Debian's locally signed ZFS DKMS module. Then enter the LUKS passphrase at boot. After logging in, enroll TPM2 (if present) with `sudo enroll-tpm2 7`; this is separate from MOK enrollment. See the [Debian-specific guide](./README-debian-13.md) for details.
 
 ## Installation prompts
 
