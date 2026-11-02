@@ -119,7 +119,7 @@ ask_secret "Password for $NEW_USER" 10; USER_PASS=$REPLY
 while :; do TIMEZONE=$(ask "Timezone" "Etc/UTC")
   [[ -f /usr/share/zoneinfo/$TIMEZONE ]] && break
   echo "  unknown timezone (e.g. Europe/Berlin)"; done
-while :; do LOCALE=$(ask "Locale" en_US.UTF-8)
+while :; do LOCALE=$(ask "Locale" de_DE.UTF-8)
   grep -q "^${LOCALE} " /usr/share/i18n/SUPPORTED 2>/dev/null && break
   echo "  unknown locale (see /usr/share/i18n/SUPPORTED, e.g. de_DE.UTF-8)"; done
 
@@ -501,7 +501,11 @@ EOS
 apt-get update
 apt-get install -y --no-install-recommends locales tzdata
 ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime; echo "$TIMEZONE" > /etc/timezone
-locale-gen "$LOCALE"; update-locale LANG="$LOCALE"
+for locale in "$LOCALE" en_US.UTF-8 de_DE.UTF-8; do
+  grep -qxF "$locale UTF-8" /etc/locale.gen || printf '%s UTF-8\n' "$locale" >> /etc/locale.gen
+done
+locale-gen
+update-locale LANG="$LOCALE"
 
 # dracut config BEFORE the kernel so the first initrd is already correct
 mkdir -p /etc/dracut.conf.d
@@ -646,7 +650,9 @@ DHCP=yes
 EOS
 CHROOT
 
-chroot $T /usr/bin/env \
+chroot $T /usr/bin/env -i \
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+  HOME=/root \
   NEW_HOSTNAME="$NEW_HOSTNAME" \
   NEW_USER="$NEW_USER"         \
   USER_PASS="$USER_PASS"       \
