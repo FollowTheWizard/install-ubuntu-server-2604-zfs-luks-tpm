@@ -360,7 +360,7 @@ zpool create -f \
   -o ashift=12 -o autotrim=on -o compatibility=grub2 -o cachefile=/etc/zfs/zpool.cache \
   -O devices=off -O acltype=posixacl -O xattr=sa -O compression=lz4 \
   -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=/boot \
-  -R $T $BPOOL mirror "$BP1" "$BP2"
+  -o altroot=$T $BPOOL mirror "$BP1" "$BP2"
 
 assert_free /dev/mapper/luks-root1 /dev/mapper/luks-root2
 echo "→ creating $RPOOL (64G OS)"
@@ -368,7 +368,7 @@ zpool create -f \
   -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
   -O acltype=posixacl -O xattr=sa -O dnodesize=auto -O compression=zstd \
   -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=/ \
-  -R $T $RPOOL mirror /dev/mapper/luks-root1 /dev/mapper/luks-root2
+  -o altroot=$T $RPOOL mirror /dev/mapper/luks-root1 /dev/mapper/luks-root2
 
 # ★ DATA POOL — mirrored, rest of disk
 assert_free /dev/mapper/luks-data1 /dev/mapper/luks-data2
@@ -377,7 +377,7 @@ zpool create -f \
   -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
   -O acltype=posixacl -O xattr=sa -O dnodesize=auto -O compression=zstd \
   -O normalization=formD -O relatime=on -O canmount=off -O mountpoint=none \
-  -R $T $DPOOL mirror /dev/mapper/luks-data1 /dev/mapper/luks-data2
+  -o altroot=$T $DPOOL mirror /dev/mapper/luks-data1 /dev/mapper/luks-data2
 
 # ── rpool datasets (OS) ──
 zfs create -o canmount=off    -o mountpoint=none  $RPOOL/ROOT
@@ -409,7 +409,7 @@ if [[ -n $XP ]]; then
   zpool create -f \
     -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
     -O acltype=posixacl -O xattr=sa -O compression=zstd -O relatime=on \
-    -O mountpoint="$EXTRA_MNT" -R $T "$EXTRA_POOL" /dev/mapper/luks-extra
+    -O mountpoint="$EXTRA_MNT" -o altroot=$T "$EXTRA_POOL" /dev/mapper/luks-extra
 fi
 
 # ═════════════════════════ 8. DEBOOTSTRAP ═════════════════════════
@@ -419,7 +419,8 @@ echo "→ debootstrap $SUITE"
 debootstrap --include=ca-certificates --arch=amd64 "$SUITE" "$T" "$MIRROR"
 
 mkdir -p $T/etc/zfs
-: > $T/etc/zfs/zpool.cache
+[[ -s /etc/zfs/zpool.cache ]] || die "ZFS pool cache missing at /etc/zfs/zpool.cache"
+cp /etc/zfs/zpool.cache $T/etc/zfs/zpool.cache
 cp /etc/hostid $T/etc/hostid
 
 # ═════════════════════════ 9. fstab / crypttab ═════════════════════════
