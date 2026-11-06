@@ -108,9 +108,9 @@ passphrase and are enrolled in TPM2 together. If TPM unlock is unavailable,
 expect passphrase prompts for the encrypted devices.
 
 The installer has not been tested for degraded boot, kernel updates, or device
-replacement. The existing [`verify.sh`](./verify.sh) and the older
-[`install-2604-zfs-luks-tpm.sh`](./install-2604-zfs-luks-tpm.sh) target the
-previous ZFS-root layout; they do not validate or install this layout.
+replacement. The repository's [`verify.sh`](./verify.sh) is a legacy checker
+for systems using the retired ZFS-root boot layout; it does not validate this
+installer. Use the test checklist above on disposable disks.
 
 PCR 7 binds unlock to Secure Boot policy and enrolled keys. It is less likely
 to require reenrollment on ordinary kernel updates than binding to kernel/initrd

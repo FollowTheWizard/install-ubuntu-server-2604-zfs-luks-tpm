@@ -129,6 +129,23 @@ add_karg() {
     done
 }
 
+remove_karg() {
+    local arg token
+    local -a args
+    for arg in "$@"; do
+        grubby --update-kernel=ALL --remove-args="$arg"
+        if [[ -f /etc/kernel/cmdline ]]; then
+            args=()
+            IFS=' ' read -r -a args < /etc/kernel/cmdline
+            local -a kept=()
+            for token in "${args[@]}"; do
+                [[ "$token" == "$arg" ]] || kept+=("$token")
+            done
+            printf '%s\n' "${kept[*]}" > /etc/kernel/cmdline
+        fi
+    done
+}
+
 rebuild_initrd() { dracut -f --regenerate-all; }
 
 part_bytes() { blockdev --getsize64 "$1"; }
@@ -195,9 +212,9 @@ discover_target() {
     local prefer_existing=${1:-yes} lab pk
     lab=$(readlink -f /dev/disk/by-partlabel/luks-mirror 2>/dev/null || true)
     if [[ "$prefer_existing" == yes && -n "$lab" && -b "$lab" ]]; then
-        pk=$(lsblk -no PKNAME "$lab" | head -n1)
+        pk=$(lsblk -dnro PKNAME "$lab" | head -n1)
         [[ -n "$pk" ]] || { die "Laufwerk für $lab konnte nicht ermittelt werden."; return 1; }
-        DISK_B="/dev/$pk"
+        if [[ "$pk" == /dev/* ]]; then DISK_B=$pk; else DISK_B="/dev/$pk"; fi
     else
         local cands=() opt
         mapfile -t cands < <(target_candidates)
@@ -215,9 +232,25 @@ discover_target() {
             done
         fi
     fi
+    [[ "$(lsblk -dnro TYPE "$DISK_B" 2>/dev/null)" == disk ]] || {
+        die "Ziel $DISK_B ist kein ganzes Laufwerk. Abbruch, um keine Partitionstabelle auf einem Partitionsgerät zu bearbeiten."
+        return 1
+    }
     [[ "$DISK_B" != "$DISK_S" ]] || { die "Ziel ist das Systemlaufwerk!"; return 1; }
     B1=$(get_part_path "$DISK_B" 1); B2=$(get_part_path "$DISK_B" 2)
     B3=$(get_part_path "$DISK_B" 3); B4=$(get_part_path "$DISK_B" 4)
+}
+
+target_has_holders() {
+    local dev holder_dir holder
+    while IFS= read -r dev; do
+        holder_dir="/sys/class/block/$(basename "$dev")/holders"
+        [[ -d "$holder_dir" ]] || continue
+        for holder in "$holder_dir"/*; do
+            [[ -e "$holder" ]] && return 0
+        done
+    done < <(lsblk -nrpo NAME "$DISK_B")
+    return 1
 }
 
 discover_uuids() {
@@ -296,8 +329,12 @@ phase2_setup_ssdb() {
     discover_target no || return 1
 
     # Sicherheitschecks am Ziel
-    if lsblk -nr -o MOUNTPOINTS "$DISK_B" | grep -q '[^[:space:]]'; then
+    if lsblk -nrpo MOUNTPOINTS "$DISK_B" | grep -q '[^[:space:]]'; then
         die "Auf $DISK_B ist etwas eingehängt. Abbruch."; return 1
+    fi
+    if target_has_holders; then
+        die "Auf $DISK_B sind noch Geräte aktiv (z.B. offene LUKS-Mapper). Es wird nichts gelöscht. System neu starten und danach Phase 3 versuchen; Phase 2 richtet die SSD neu ein und löscht Daten."
+        return 1
     fi
     echo ""
     lsblk -o NAME,SIZE,MODEL,SERIAL,FSTYPE,LABEL "$DISK_B"
@@ -349,15 +386,20 @@ phase2_setup_ssdb() {
     # nofail bei beiden: ein fehlendes Gerät darf nicht den Start blockieren.
     crypttab_has "luks-$U3" || echo "luks-$U3 UUID=$U3 none discard,x-initrd.attach,nofail,tpm2-device=auto" >> /etc/crypttab
     crypttab_has "luks-$U4" || echo "luks-$U4 UUID=$U4 none discard,nofail,tpm2-device=auto" >> /etc/crypttab
-    add_karg "rd.luks.uuid=$U3"
+    # rd.luks.uuid makes dracut wait for this disk unconditionally, even with nofail.
+    # crypttab's x-initrd.attach keeps it available early when present, without
+    # making a missing mirror disk block the initqueue.
+    remove_karg "rd.luks.uuid=$U3"
     rebuild_initrd
     echo "[OK] Phase 2 abgeschlossen."
 }
 
 phase3_enable_mirror() {
-    ensure_cmds btrfs:btrfs-progs dracut:dracut partprobe:parted
+    ensure_cmds btrfs:btrfs-progs dracut:dracut partprobe:parted grubby:grubby
     discover_uuids || return 1
     ensure_open "$B3" "$U3" || return 1
+    # Remove this legacy mandatory dependency when repairing an existing setup too.
+    remove_karg "rd.luks.uuid=$U3"
     local m="/dev/mapper/luks-$U3" sys_sz mir_sz
     sys_sz=$(part_bytes "$SYS_MAPPED"); mir_sz=$(part_bytes "$m")
     ((mir_sz >= sys_sz)) || { die "Mirror-Gerät ist kleiner als das System-Gerät."; return 1; }

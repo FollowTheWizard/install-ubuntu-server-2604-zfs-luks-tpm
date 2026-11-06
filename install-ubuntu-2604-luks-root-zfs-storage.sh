@@ -388,7 +388,7 @@ cat > /usr/local/sbin/enroll-tpm2 <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 PCRS="${1:-7}"
-[[ $PCRS =~ ^[0-9]+(,[0-9]+)*$ ]] || { echo "Usage: enroll-tpm2 [PCRS, default 7]" >&2; exit 2; }
+[[ $PCRS =~ ^[0-9]+(\+[0-9]+)*$ ]] || { echo "Usage: enroll-tpm2 [PCRS, default 7; use + between PCRs]" >&2; exit 2; }
 [[ -c /dev/tpmrm0 ]] || { echo "ERROR: no TPM2 resource-manager device (/dev/tpmrm0)." >&2; exit 1; }
 read -r -s -p "Current LUKS passphrase: " PASSWORD; printf '\n'
 KEYFILE=$(mktemp /run/enroll-tpm2.XXXXXX)
