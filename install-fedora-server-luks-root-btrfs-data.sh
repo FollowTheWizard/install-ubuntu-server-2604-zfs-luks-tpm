@@ -572,6 +572,7 @@ systemctl --root="$TARGET" enable NetworkManager.service sshd.service firewalld.
   || die "Fedora shim was not installed on the primary ESP; refusing to report success."
 [[ -s "$TARGET/boot/efi/EFI/fedora/grubx64.efi" ]] \
   || die "Fedora GRUB EFI binary was not installed on the primary ESP."
+mkdir -p "$TARGET/boot/efi2/EFI/fedora"
 rsync -a --delete "$TARGET/boot/efi/EFI/fedora/" "$TARGET/boot/efi2/EFI/fedora/"
 
 for disk in "$DISK1" "$DISK2"; do
