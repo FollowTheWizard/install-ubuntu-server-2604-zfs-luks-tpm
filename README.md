@@ -1,8 +1,9 @@
 # Encrypted, mirrored Linux installations
 
-This repository contains three separate, destructive installers. Pick the
-guide matching the operating system you intend to install; the scripts are not
-interchangeable and should not be combined into one installation.
+This repository contains three recommended installation paths and a legacy
+Debian ZFS installer. Pick the guide matching the operating system and
+filesystem you intend to install; the scripts are not interchangeable and
+should not be combined into one installation.
 
 ## Installation paths
 
@@ -10,12 +11,12 @@ interchangeable and should not be combined into one installation.
 |---|---|---|---|---|
 | Ubuntu Server 26.04 | ext4 root on mdraid/LUKS2/LVM; separate LUKS2-backed ZFS mirror at `/data` | Enabled | Enroll after first boot | [Installer](./install-ubuntu-26.04-luks-root-zfs-data.sh) · [Guide](./README-ubuntu-26.04-luks-root.md) |
 | Fedora Server | Btrfs RAID1 `/boot`; separate LUKS2-backed Btrfs RAID1 filesystems for `/` and `/data` | Enabled | Enroll after first boot | [Installer](./install-fedora-server-luks-root-btrfs-data.sh) · [Guide](./README-fedora-luks-root-btrfs-data.md) |
-| Debian 13 | ZFS `bpool`, LUKS2-backed mirrored `rpool` and `dpool` | Disabled for installation; re-enable and enroll MOK before first installed boot | Optional; enroll after first boot | [Installer](./install-debian-13-zfs-luks-tpm.sh) · [Guide](./README-debian-13.md) |
+| Debian 13 | Btrfs RAID1 `/boot`; LUKS2-backed Btrfs RAID1 root and data | Can remain enabled; Debian-signed boot components, no MOK | Optional; enroll after first boot | [Installer](./install-debian-13-btrfs-luks-tpm.sh) · [Guide](./README-debian-13.md) |
 
-These are different designs, not interchangeable editions of one installer:
-Ubuntu and Fedora keep ZFS out of the root boot path, while Debian uses ZFS
-for `/boot` and root. Fedora uses native Btrfs for `/boot`, the OS, and data
-because this path does not rely on an OpenZFS kernel module.
+These are different designs, not interchangeable editions of one installer.
+The Debian Btrfs path, like Fedora's, avoids an OpenZFS kernel module in the
+boot path. The original Debian ZFS installer remains available separately and
+requires MOK enrollment for its DKMS-built ZFS module under Secure Boot.
 
 The Ubuntu and Fedora installers are experimental and have not been
 boot-tested; the Debian installer is also not hardware-tested. Every installer
@@ -27,15 +28,16 @@ completed the relevant guide's tests on disposable disks.
 1. Read the selected operating-system guide completely. Confirm its release,
    architecture, firmware, network, TPM, and disk requirements first.
 2. Boot that operating system's specified live media. Secure Boot requirements
-   differ: keep it enabled for Ubuntu and Fedora; Debian requires it disabled in
-   the live session, then re-enabled for the installed system's MOK enrollment.
+   differ: keep it enabled for Ubuntu and Fedora. Debian's Btrfs installer uses
+   Debian-signed boot components and does not require disabling Secure Boot or
+   enrolling a MOK.
 3. Download the matching installer using the command in its guide. Inspect the
    script and run `bash -n` before execution; a syntax check does not establish
    that the installer is safe for a particular machine.
 4. Run it from the required live environment with root privileges. Verify both
    disk identities, sizes, and models before accepting the destructive
    confirmation. Keep console or out-of-band access available.
-5. Follow the guide for first boot, Secure Boot/MOK steps, and TPM enrollment.
+5. Follow the guide for first boot, Secure Boot, and TPM enrollment.
    Keep the LUKS passphrase offline as the recovery method; TPM unlock is not a
    substitute for a recovery key.
 6. Complete the guide's degraded-disk, update, and recovery tests on disposable
