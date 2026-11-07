@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fedora Server: Btrfs-Mirror + LUKS2 + TPM2 (v5, überarbeitet)
+# Fedora Server Btrfs-root mirror configuration + LUKS2 + TPM2 (v5)
 # Menügeführt, alles Ermittelbare wird automatisch erkannt, du entscheidest nur.
 # ==============================================================================
 set -euo pipefail

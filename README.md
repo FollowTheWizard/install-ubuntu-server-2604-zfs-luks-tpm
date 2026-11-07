@@ -1,36 +1,67 @@
-# Ubuntu Server 26.04 LTS — installation options
+# Encrypted, mirrored Linux installations
 
-## Ubuntu Server
+This repository contains three separate, destructive installers. Pick the
+guide matching the operating system you intend to install; the scripts are not
+interchangeable and should not be combined into one installation.
 
-There is one maintained Ubuntu installation path: the
-[Ubuntu encrypted-root guide](./README-ubuntu-26.04-luks-root.md) and its
-[installer](./install-ubuntu-2604-luks-root-zfs-storage.sh).
+## Installation paths
 
-It uses a mirrored ext4 root on mdraid/LUKS2/LVM and a separate LUKS2-backed
-ZFS mirror for data at `/data`. Secure Boot stays enabled; TPM2 enrollment is
-completed after the first boot. The installer erases both selected disks and
-has not yet been boot-tested on hardware, so use disposable disks and follow
-the guide's test checklist.
+| Operating system | Disk layout (in brief) | Boot-media Secure Boot | TPM2 | Installer and guide |
+|---|---|---|---|---|
+| Ubuntu Server 26.04 | ext4 root on mdraid/LUKS2/LVM; separate LUKS2-backed ZFS mirror at `/data` | Enabled | Enroll after first boot | [Installer](./install-ubuntu-26.04-luks-root-zfs-data.sh) · [Guide](./README-ubuntu-26.04-luks-root.md) |
+| Fedora Server | ext4 root on mdraid/LUKS2/LVM; separate LUKS2-backed Btrfs RAID1 at `/data` | Enabled | Enroll after first boot | [Installer](./install-fedora-server-luks-root-btrfs-data.sh) · [Guide](./README-fedora-luks-root-btrfs-data.md) |
+| Debian 13 | ZFS `bpool`, LUKS2-backed mirrored `rpool` and `dpool` | Disabled for installation; re-enable and enroll MOK before first installed boot | Optional; enroll after first boot | [Installer](./install-debian-13-zfs-luks-tpm.sh) · [Guide](./README-debian-13.md) |
 
-The former `install-2604-zfs-luks-tpm.sh` used a different design: ZFS-backed
-`/boot` and root (`bpool`/`rpool`), plus a ZFS data pool. It has been retired
-from the current branch to avoid presenting two competing Ubuntu installers.
-Existing systems built with that layout are unaffected. The repository's
-`verify.sh` is only for those existing ZFS-root systems; it does not validate
-the maintained ext4-root installer.
+These are different designs, not interchangeable editions of one installer:
+Ubuntu and Fedora keep ZFS out of the root boot path, while Debian uses ZFS
+for `/boot` and root. Fedora uses native Btrfs for data because this path does
+not rely on an OpenZFS kernel module.
 
-## Fedora Server
+The Ubuntu and Fedora installers are experimental and have not been
+boot-tested; the Debian installer is also not hardware-tested. Every installer
+erases the two disks you select. Treat all of them as untrusted until you have
+completed the relevant guide's tests on disposable disks.
 
-For Fedora with Secure Boot enabled, a mirrored encrypted ext4 root, and
-Btrfs RAID1 data storage, see the
-[Fedora installation guide](./README-fedora-luks-root-btrfs-data.md) and
-[Fedora live-media installer](./install-fedora-luks-root-btrfs-data.sh).
+## General installation workflow
 
-## Debian 13
+1. Read the selected operating-system guide completely. Confirm its release,
+   architecture, firmware, network, TPM, and disk requirements first.
+2. Boot that operating system's specified live media. Secure Boot requirements
+   differ: keep it enabled for Ubuntu and Fedora; Debian requires it disabled in
+   the live session, then re-enabled for the installed system's MOK enrollment.
+3. Download the matching installer using the command in its guide. Inspect the
+   script and run `bash -n` before execution; a syntax check does not establish
+   that the installer is safe for a particular machine.
+4. Run it from the required live environment with root privileges. Verify both
+   disk identities, sizes, and models before accepting the destructive
+   confirmation. Keep console or out-of-band access available.
+5. Follow the guide for first boot, Secure Boot/MOK steps, and TPM enrollment.
+   Keep the LUKS passphrase offline as the recovery method; TPM unlock is not a
+   substitute for a recovery key.
+6. Complete the guide's degraded-disk, update, and recovery tests on disposable
+   drives before storing important data.
 
-The Debian 13 ZFS-root installation is separate from the Ubuntu and Fedora
-installers. See the [Debian guide](./README-debian-13.md) and
-[Debian installer](./install-debian-13-zfs-luks-tpm.sh).
+Use the guides for their exact download commands and recovery steps. The URLs
+in them point to the published `main` branch, not uncommitted changes in this
+checkout. For reproducible installs, substitute a reviewed commit hash.
+
+## Other scripts (not installation paths)
+
+- [`configure-fedora-btrfs-root-mirror.sh`](./configure-fedora-btrfs-root-mirror.sh)
+  is a menu-driven post-install tool for a separate Fedora Btrfs-root design.
+  It is not the Fedora installer above and is not compatible with that
+  installer's ext4-root layout. Its disk-setup phase erases the selected
+  secondary disk; inspect its phases and confirm the existing system layout
+  before using it.
+- [`verify-legacy-ubuntu-zfs-root.sh`](./verify-legacy-ubuntu-zfs-root.sh)
+  checks existing Ubuntu systems built with the retired ZFS-root boot layout.
+  It does not validate the current Ubuntu, Fedora, or Debian installers.
+- [`manage-samba-users.sh`](./manage-samba-users.sh) manages Samba accounts
+  (`add`, `remove`, `passwd`, `disable`, `enable`, and `list`) on a system
+  where Samba is already installed. It is unrelated to OS installation.
+
+The former Ubuntu ZFS-root installer is retired from this branch. Existing
+systems using its `bpool`/`rpool` design are unaffected.
 
 ## License and attribution
 

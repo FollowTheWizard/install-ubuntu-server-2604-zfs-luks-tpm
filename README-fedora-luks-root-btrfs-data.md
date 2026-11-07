@@ -37,12 +37,12 @@ open a terminal, and download and inspect the script:
 ```bash
 sudo dnf5 install -y curl
 curl --fail --show-error --location \
-  --output install-fedora-luks-root-btrfs-data.sh \
-  https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-fedora-luks-root-btrfs-data.sh
+  --output install-fedora-server-luks-root-btrfs-data.sh \
+  https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-fedora-server-luks-root-btrfs-data.sh
 
-less install-fedora-luks-root-btrfs-data.sh
-bash -n install-fedora-luks-root-btrfs-data.sh
-sudo bash install-fedora-luks-root-btrfs-data.sh
+less install-fedora-server-luks-root-btrfs-data.sh
+bash -n install-fedora-server-luks-root-btrfs-data.sh
+sudo bash install-fedora-server-luks-root-btrfs-data.sh
 ```
 
 The script selects two disks interactively. Confirm model, capacity, and stable

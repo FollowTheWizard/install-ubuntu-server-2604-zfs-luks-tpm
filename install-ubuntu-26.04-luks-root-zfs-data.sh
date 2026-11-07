@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ubuntu 26.04 Server: mirrored mdraid /boot and LUKS2+LVM+ext4 root,
+# Ubuntu Server 26.04: mirrored mdraid /boot and LUKS2+LVM+ext4 root,
 # plus a LUKS2-backed ZFS mirror for data. Secure Boot must stay enabled.
 # This installer destroys both selected disks. Hardware validation is required.
 # SPDX-License-Identifier: Apache-2.0

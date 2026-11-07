@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  verify-install.sh  rev 5  (patched copy of upstream verify.sh rev 4)
+#  verify-legacy-ubuntu-zfs-root.sh rev 5 (patched copy of upstream verify.sh rev 4)
 #  SPDX-License-Identifier: Apache-2.0 — see LICENSE and NOTICE.
 #  Derived from FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm (verify.sh rev 4).
 #  Written for installer rev. 9.0-p1. NOT tested on real hardware.
@@ -23,7 +23,7 @@
 #      message: efibootmgr lines (File(\EFI\ubuntu\shimx64.efi)) came out mangled (\E = ESC,
 #      ...). Now printf with %s.
 #  Run on the installed system (after first boot) as root.
-#  Usage:  sudo bash verify-install.sh [--disk1 /dev/sdX] [--disk2 /dev/sdY]
+#  Usage:  sudo bash verify-legacy-ubuntu-zfs-root.sh [--disk1 /dev/sdX] [--disk2 /dev/sdY]
 # =============================================================================
 set -uo pipefail
 

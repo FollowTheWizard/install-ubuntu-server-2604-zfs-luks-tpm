@@ -32,6 +32,7 @@ Trixie's stable repositories to avoid mixing release suites during installation.
 
    ```bash
    curl -fLO https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-debian-13-zfs-luks-tpm.sh
+   bash -n install-debian-13-zfs-luks-tpm.sh
    sudo bash install-debian-13-zfs-luks-tpm.sh
    ```
 

@@ -24,12 +24,12 @@ set -Eeuo pipefail
 # Samba user management
 #
 # Usage:
-#   sudo ./samba-user.sh add username
-#   sudo ./samba-user.sh remove username
-#   sudo ./samba-user.sh passwd username
-#   sudo ./samba-user.sh disable username
-#   sudo ./samba-user.sh enable username
-#   sudo ./samba-user.sh list
+#   sudo ./manage-samba-users.sh add username
+#   sudo ./manage-samba-users.sh remove username
+#   sudo ./manage-samba-users.sh passwd username
+#   sudo ./manage-samba-users.sh disable username
+#   sudo ./manage-samba-users.sh enable username
+#   sudo ./manage-samba-users.sh list
 ###############################################################################
 
 [[ $EUID -eq 0 ]] || {

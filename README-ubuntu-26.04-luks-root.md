@@ -42,12 +42,12 @@ sudo apt-get update
 sudo apt-get install -y curl ca-certificates
 
 curl --fail --show-error --location \
-  --output install-ubuntu-2604-luks-root-zfs-storage.sh \
-  https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-ubuntu-2604-luks-root-zfs-storage.sh
+  --output install-ubuntu-26.04-luks-root-zfs-data.sh \
+  https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-ubuntu-26.04-luks-root-zfs-data.sh
 
-less install-ubuntu-2604-luks-root-zfs-storage.sh
-bash -n install-ubuntu-2604-luks-root-zfs-storage.sh
-sudo bash install-ubuntu-2604-luks-root-zfs-storage.sh
+less install-ubuntu-26.04-luks-root-zfs-data.sh
+bash -n install-ubuntu-26.04-luks-root-zfs-data.sh
+sudo bash install-ubuntu-26.04-luks-root-zfs-data.sh
 ```
 
 The URL above downloads the published `main` branch, not uncommitted changes in
@@ -108,7 +108,7 @@ passphrase and are enrolled in TPM2 together. If TPM unlock is unavailable,
 expect passphrase prompts for the encrypted devices.
 
 The installer has not been tested for degraded boot, kernel updates, or device
-replacement. The repository's [`verify.sh`](./verify.sh) is a legacy checker
+replacement. The repository's [legacy verifier](./verify-legacy-ubuntu-zfs-root.sh) is a checker
 for systems using the retired ZFS-root boot layout; it does not validate this
 installer. Use the test checklist above on disposable disks.
 
