@@ -12,7 +12,8 @@ need an out-of-tree DKMS module or MOK enrollment.
 ## Requirements
 
 - Debian 13 amd64 live media, booted in UEFI mode, with network access.
-- Two disks large enough for a 64 GiB OS filesystem plus data.
+- Two disks large enough for a 32 GiB minimum OS filesystem plus at least 1 GiB
+  for data after EFI, boot, and swap partitions.
 - Root privileges.
 - TPM 2.0 is optional; without one, enter the LUKS passphrase at each boot.
 
@@ -34,7 +35,8 @@ module or MOK key is needed.
 
 3. Select the two install disks, configure the user and system, and type `YES`
    only after verifying the disk identities. All data on both disks will be
-   erased.
+   erased. Choose an OS size from 32 GiB up to the disk-dependent maximum;
+   64 GiB is the default, and remaining mirrored capacity is assigned to data.
 4. On first boot, enter the LUKS passphrase. After logging in, enroll TPM2:
 
    ```bash
@@ -75,5 +77,6 @@ passphrase.
 
 The repository also retains [the original Debian ZFS installer](./install-debian-13-zfs-luks-tpm.sh).
 That separate design uses ZFS DKMS and therefore requires a MOK enrollment to
-use Secure Boot with its installed ZFS module. Use the Btrfs installer above
-when avoiding MOK enrollment is a requirement.
+use Secure Boot with its installed ZFS module. It also prompts for an OS size
+with a 32 GiB minimum and 64 GiB default. Use the Btrfs installer above when
+avoiding MOK enrollment is a requirement.

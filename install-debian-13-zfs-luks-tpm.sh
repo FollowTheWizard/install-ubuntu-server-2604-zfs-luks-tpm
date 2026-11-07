@@ -2,7 +2,7 @@
 # =============================================================================
 #  Debian 13 (trixie) — interactive installer
 #  2-disk ZFS mirror · LUKS2 FDE · unlock by passphrase OR TPM2 · dracut · GRUB/UEFI
-#  LAYOUT: 64 GiB OS (rpool) + remaining data (dpool), both mirrored on LUKS2
+#  LAYOUT: configurable OS size (minimum 32 GiB) + remaining mirrored data
 #  SPDX-License-Identifier: Apache-2.0
 #  NO WARRANTY. DESTROYS DATA on the disks you select.
 #
@@ -23,7 +23,9 @@ MIRROR=https://deb.debian.org/debian
 SECURITY_MIRROR=https://deb.debian.org/debian-security
 EFI_MB=1024; BPOOL_MB=2048
 SWAP_MB=4096          # encrypted per disk, random key each boot
-ROOT_MB=65536         # ★ FIXED 64 GiB for OS
+MIN_ROOT_GIB=32
+DEFAULT_ROOT_GIB=64
+ROOT_MB=$(( DEFAULT_ROOT_GIB * 1024 ))
 RPOOL=rpool; BPOOL=bpool; DPOOL=dpool   # dpool = mirrored data pool
 T=/mnt
 
@@ -109,9 +111,19 @@ S1=$(mib "$DISK1"); S2=$(mib "$DISK2")
 SMALL=$(( S1 < S2 ? S1 : S2 )); BIG=$(( S1 > S2 ? S1 : S2 ))
 BIG_DISK=$DISK1; (( S2 > S1 )) && BIG_DISK=$DISK2
 EXTRA_MB=$(( BIG - SMALL ))
+MAX_ROOT_GIB=$(( (SMALL - 1 - EFI_MB - BPOOL_MB - SWAP_MB - 8 - 1025) / 1024 ))
+(( MAX_ROOT_GIB >= MIN_ROOT_GIB )) \
+  || die "disks too small for a ${MIN_ROOT_GIB} GiB OS plus at least 1 GiB data (smallest disk: ${SMALL} MiB)"
 
 # ═════════════════════════ 2. SYSTEM SETTINGS ═════════════════════════
 hr; echo " System settings (Enter accepts the [default])"; hr
+while :; do
+  ROOT_GIB=$(ask "OS/root size in GiB (minimum ${MIN_ROOT_GIB}, maximum ${MAX_ROOT_GIB})" "$DEFAULT_ROOT_GIB")
+  [[ $ROOT_GIB =~ ^[0-9]+$ \
+    && $ROOT_GIB -ge $MIN_ROOT_GIB && $ROOT_GIB -le $MAX_ROOT_GIB ]] && break
+  echo "  enter a whole number from $MIN_ROOT_GIB to $MAX_ROOT_GIB"
+done
+ROOT_MB=$(( ROOT_GIB * 1024 ))
 NEW_HOSTNAME=$(ask "Hostname" debian-server)
 while :; do NEW_USER=$(ask "Admin username" admin)
   [[ $NEW_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && break; echo "  invalid username"; done
@@ -124,9 +136,9 @@ while :; do LOCALE=$(ask "Locale" de_DE.UTF-8)
   grep -q "^${LOCALE} " /usr/share/i18n/SUPPORTED 2>/dev/null && break
   echo "  unknown locale (see /usr/share/i18n/SUPPORTED, e.g. de_DE.UTF-8)"; done
 
-# ★ OS / DATA split — 64 GiB for OS, rest for data (mirrored on both disks)
+# OS / DATA split — selected OS size, rest for data (mirrored on both disks)
 DATA_MB=$(( SMALL - 1 - EFI_MB - BPOOL_MB - SWAP_MB - ROOT_MB - 8 ))
-(( DATA_MB > 1024 )) || die "disks too small for 64G OS + data layout (need ~80G+ each, have ${SMALL}M)"
+(( DATA_MB > 1024 )) || die "disks too small for the selected OS size plus data (smallest disk: ${SMALL} MiB)"
 
 EXTRA_SPACE=none; EXTRA_POOL=xpool; EXTRA_MNT=/data/extra
 if (( EXTRA_MB >= 1024 )); then
@@ -159,7 +171,7 @@ cat <<EOF
    DISK1        : $DISK1  (${S1} MiB)
    DISK2        : $DISK2  (${S2} MiB)
    layout/disk  : ${EFI_MB}M ESP | ${BPOOL_MB}M bpool | ${SWAP_MB}M swap | ${ROOT_MB}M rpool(OS) | ${DATA_MB}M dpool(data)
-   OS  (rpool)  : 64 GiB mirror on LUKS2  →  /, /var, /tmp, /srv, /root
+   OS  (rpool)  : ${ROOT_GIB} GiB mirror on LUKS2  →  /, /var, /tmp, /srv, /root
    DATA(dpool)  : ${DATA_MB} MiB mirror on LUKS2  →  /home, /data
    leftover     : ${EXTRA_MB} MiB on $BIG_DISK → $(
      [[ $EXTRA_SPACE == pool ]] \
@@ -309,7 +321,7 @@ partition_disk() {
   sgdisk -n1:1M:+${EFI_MB}M   -t1:EF00 -c1:EFI        "$d" >/dev/null
   sgdisk -n2:0:+${BPOOL_MB}M  -t2:BE00 -c2:bpool      "$d" >/dev/null
   sgdisk -n3:0:+${SWAP_MB}M   -t3:8200 -c3:swap       "$d" >/dev/null
-  sgdisk -n4:0:+${ROOT_MB}M   -t4:8309 -c4:luks-root  "$d" >/dev/null   # ★ 64G OS
+  sgdisk -n4:0:+${ROOT_MB}M   -t4:8309 -c4:luks-root  "$d" >/dev/null
   sgdisk -n5:0:+${DATA_MB}M   -t5:8309 -c5:luks-data  "$d" >/dev/null   # ★ data (mirrored)
   if [[ $EXTRA_SPACE == pool && $d == "$BIG_DISK" ]]; then
     sgdisk -n6:0:0 -t6:8309 -c6:luks-extra "$d" >/dev/null              # ★ part 6 now
@@ -364,7 +376,7 @@ zpool create -f \
   -o altroot=$T $BPOOL mirror "$BP1" "$BP2"
 
 assert_free /dev/mapper/luks-root1 /dev/mapper/luks-root2
-echo "→ creating $RPOOL (64G OS)"
+echo "→ creating $RPOOL (${ROOT_GIB}G OS)"
 zpool create -f \
   -o ashift=12 -o autotrim=on -o cachefile=/etc/zfs/zpool.cache \
   -O acltype=posixacl -O xattr=sa -O dnodesize=auto -O compression=zstd \
@@ -769,7 +781,7 @@ cat <<EOF
  EFI sync   : sudo sync-efi            — after shim-signed/grub package updates
  Scrub      : sudo zpool scrub $RPOOL $BPOOL $DPOOL
  Pools      : $BPOOL (mirror, /boot)
-              $RPOOL (mirror on LUKS, 64G, /)
+              $RPOOL (mirror on LUKS, ${ROOT_GIB}G, /)
               $DPOOL (mirror on LUKS, ${DATA_MB}M, /home + /data)$(
    [[ -n $XP ]] && echo "
               $EXTRA_POOL (SINGLE disk — no redundancy — $EXTRA_MNT)" )

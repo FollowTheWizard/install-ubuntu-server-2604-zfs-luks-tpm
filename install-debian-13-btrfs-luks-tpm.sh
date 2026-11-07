@@ -15,7 +15,9 @@ SECURITY_MIRROR=https://deb.debian.org/debian-security
 EFI_MB=1024
 BPOOL_MB=2048
 SWAP_MB=4096
-ROOT_MB=65536
+MIN_ROOT_GIB=32
+DEFAULT_ROOT_GIB=64
+ROOT_MB=$(( DEFAULT_ROOT_GIB * 1024 ))
 T=/mnt
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -106,14 +108,22 @@ BIG=$(( S1 > S2 ? S1 : S2 ))
 BIG_DISK=$DISK1
 (( S2 > S1 )) && BIG_DISK=$DISK2
 EXTRA_MB=$(( BIG - SMALL ))
-DATA_MB=$(( SMALL - 1 - EFI_MB - BPOOL_MB - SWAP_MB - ROOT_MB - 8 ))
-(( DATA_MB > 1024 )) \
-  || die "disks too small for 64G OS + data layout (need ~80G+ each, have ${SMALL}M)"
+MAX_ROOT_GIB=$(( (SMALL - 1 - EFI_MB - BPOOL_MB - SWAP_MB - 8 - 1025) / 1024 ))
+(( MAX_ROOT_GIB >= MIN_ROOT_GIB )) \
+  || die "disks too small for a ${MIN_ROOT_GIB} GiB OS plus at least 1 GiB data (smallest disk: ${SMALL} MiB)"
 
 # ═════════════════════════ 2. SYSTEM SETTINGS ═════════════════════════
 hr
 echo " System settings (Enter accepts the [default])"
 hr
+while :; do
+  ROOT_GIB=$(ask "OS/root size in GiB (minimum ${MIN_ROOT_GIB}, maximum ${MAX_ROOT_GIB})" "$DEFAULT_ROOT_GIB")
+  [[ $ROOT_GIB =~ ^[0-9]+$ \
+    && $ROOT_GIB -ge $MIN_ROOT_GIB && $ROOT_GIB -le $MAX_ROOT_GIB ]] && break
+  echo "  enter a whole number from $MIN_ROOT_GIB to $MAX_ROOT_GIB"
+done
+ROOT_MB=$(( ROOT_GIB * 1024 ))
+DATA_MB=$(( SMALL - 1 - EFI_MB - BPOOL_MB - SWAP_MB - ROOT_MB - 8 ))
 NEW_HOSTNAME=$(ask "Hostname" debian-server)
 while :; do
   NEW_USER=$(ask "Admin username" admin)
@@ -177,7 +187,7 @@ cat <<EOF
    DISK2        : $DISK2  (${S2} MiB)
    layout/disk  : ${EFI_MB}M ESP | ${BPOOL_MB}M /boot | ${SWAP_MB}M swap | ${ROOT_MB}M root | ${DATA_MB}M data
    /boot        : ${BPOOL_MB}M unencrypted Btrfs RAID1
-   /            : 64 GiB Btrfs RAID1 on LUKS2
+   /            : ${ROOT_GIB} GiB Btrfs RAID1 on LUKS2
    /home,/data  : ${DATA_MB} MiB Btrfs RAID1 on LUKS2
    leftover     : ${EXTRA_MB} MiB on $BIG_DISK → $(
      [[ $EXTRA_SPACE == btrfs ]] \
