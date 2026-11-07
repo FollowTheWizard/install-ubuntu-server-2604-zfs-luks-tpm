@@ -116,6 +116,9 @@ close_stale_installer_mappings() {
     if lsblk -nrpo MOUNTPOINT "$mapper" | grep -qE '^/'; then
       die "$mapper is still mounted; unmount its filesystems before retrying."
     fi
+    echo "Releasing stale Btrfs device registration for $mapper."
+    btrfs device scan --forget "$mapper" \
+      || die "Could not forget $mapper from Btrfs; verify it is not mounted before retrying."
     echo "Closing stale installer mapping $mapper."
     cryptsetup close "$name" \
       || die "Could not close $mapper; inspect its users before retrying."
