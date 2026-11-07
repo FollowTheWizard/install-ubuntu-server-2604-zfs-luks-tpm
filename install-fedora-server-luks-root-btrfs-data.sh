@@ -74,6 +74,54 @@ disk_has_active_swap() {
   done < <(swapon --show=NAME --noheadings --raw)
   return 1
 }
+close_stale_installer_mappings() {
+  local name mapper dm sysfs_name slave slave_path backing target_partition
+  local matches_target slave_count found_target
+  local -a target_partitions=()
+  for disk in "$DISK1" "$DISK2"; do
+    while IFS= read -r target_partition; do
+      target_partitions+=("$(readlink -f "$target_partition")")
+    done < <(lsblk -nrpo NAME "$disk")
+  done
+
+  for name in fedora-root1 fedora-root2 fedora-data1 fedora-data2; do
+    mapper="/dev/mapper/$name"
+    [[ -b $mapper ]] || continue
+    dm=$(basename "$(readlink -f "$mapper")")
+    [[ -r /sys/class/block/"$dm"/dm/name ]] || continue
+    IFS= read -r sysfs_name < /sys/class/block/"$dm"/dm/name
+    [[ $sysfs_name == "$name" ]] || continue
+
+    matches_target=1
+    slave_count=0
+    for slave_path in /sys/class/block/"$dm"/slaves/*; do
+      [[ -e $slave_path ]] || continue
+      (( slave_count += 1 ))
+      slave=$(basename "$slave_path")
+      backing=$(readlink -f "/dev/$slave")
+      found_target=0
+      for target_partition in "${target_partitions[@]}"; do
+        if [[ $backing == "$target_partition" ]]; then
+          found_target=1
+          break
+        fi
+      done
+      if (( found_target == 0 )); then
+        matches_target=0
+        break
+      fi
+    done
+    (( slave_count > 0 && matches_target == 1 )) || continue
+
+    if lsblk -nrpo MOUNTPOINT "$mapper" | grep -qE '^/'; then
+      die "$mapper is still mounted; unmount its filesystems before retrying."
+    fi
+    echo "Closing stale installer mapping $mapper."
+    cryptsetup close "$name" \
+      || die "Could not close $mapper; inspect its users before retrying."
+  done
+  udevadm settle
+}
 mount_target() {
   mount "$1" "$2"
   MOUNTS+=("$2")
@@ -93,10 +141,14 @@ cleanup() {
       umount -R "${MOUNTS[$i]}" || printf 'WARNING: could not unmount %s\n' "${MOUNTS[$i]}" >&2
     fi
   done
-  (( OPENED_DATA2 == 0 )) || cryptsetup close fedora-data2 || true
-  (( OPENED_DATA1 == 0 )) || cryptsetup close fedora-data1 || true
-  (( OPENED_ROOT2 == 0 )) || cryptsetup close fedora-root2 || true
-  (( OPENED_ROOT1 == 0 )) || cryptsetup close fedora-root1 || true
+  (( OPENED_DATA2 == 0 )) || cryptsetup close fedora-data2 \
+    || printf 'WARNING: could not close fedora-data2; inspect active users before retrying.\n' >&2
+  (( OPENED_DATA1 == 0 )) || cryptsetup close fedora-data1 \
+    || printf 'WARNING: could not close fedora-data1; inspect active users before retrying.\n' >&2
+  (( OPENED_ROOT2 == 0 )) || cryptsetup close fedora-root2 \
+    || printf 'WARNING: could not close fedora-root2; inspect active users before retrying.\n' >&2
+  (( OPENED_ROOT1 == 0 )) || cryptsetup close fedora-root1 \
+    || printf 'WARNING: could not close fedora-root1; inspect active users before retrying.\n' >&2
 }
 trap cleanup EXIT
 
@@ -246,6 +298,8 @@ EOF
 hr
 read -r -p "Type YES to erase both disks and install: " confirmation
 [[ $confirmation == YES ]] || { echo "Aborted."; exit 0; }
+
+close_stale_installer_mappings
 
 for disk in "$DISK1" "$DISK2"; do
   [[ -b $disk && $(lsblk -dnro TYPE "$disk") == disk ]] \
