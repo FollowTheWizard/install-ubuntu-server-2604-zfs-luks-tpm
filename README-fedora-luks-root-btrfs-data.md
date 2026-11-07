@@ -29,9 +29,10 @@ MOK enrollment.
   live release's Fedora repositories to install Fedora Server packages into
   the target. Secure Boot is optional, which is useful in VMs where it may not
   be available.
-- Two unmounted x86_64 disks. Each must fit a 1 GiB EFI partition, 2 GiB `/boot`,
-  at least 40 GiB for the OS and 8 GiB for Btrfs data. The installer proposes
-  100 GiB for the OS, or a smaller size if required by disk capacity.
+- Two unmounted x86_64 disks. Each must be about 51 GiB or larger to fit a
+  1 GiB EFI partition, 2 GiB `/boot`, at least 40 GiB for the OS, and 8 GiB for
+  Btrfs data. The installer proposes 100 GiB for the OS, or a smaller size if
+  required by disk capacity.
 - Network access and TPM 2.0 exposed as `/dev/tpmrm0`.
 - Console access for the first passphrase boot and recovery testing.
 

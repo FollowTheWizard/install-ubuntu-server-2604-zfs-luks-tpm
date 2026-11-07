@@ -71,7 +71,7 @@ disk_has_active_swap() {
       child_real=$(readlink -f "$child")
       [[ $child_real == "$swap_real" ]] && return 0
     done < <(lsblk -nrpo NAME "$disk")
-  done < <(swapon --noheadings --raw --output NAME)
+  done < <(swapon --show=NAME --noheadings --raw)
   return 1
 }
 mount_target() {
@@ -193,7 +193,7 @@ SMALL_SIZE=$SIZE1
 (( SIZE2 < SMALL_SIZE )) && SMALL_SIZE=$SIZE2
 MAX_ROOT_GIB=$(( (SMALL_SIZE - EFI_MB - BOOT_MB - MIN_DATA_MB - 16) / 1024 ))
 (( MAX_ROOT_GIB >= MIN_ROOT_GIB )) \
-  || die "Each disk must fit 1 GiB EFI, 2 GiB /boot, at least 40 GiB OS, and 8 GiB data."
+  || die "Each disk must be at least $((EFI_MB + BOOT_MB + MIN_ROOT_GIB * 1024 + MIN_DATA_MB + 16)) MiB (~51 GiB) for 1 GiB EFI, 2 GiB /boot, 40 GiB OS, and 8 GiB data."
 ROOT_DEFAULT_GIB=$DEFAULT_ROOT_GIB
 if (( ROOT_DEFAULT_GIB > MAX_ROOT_GIB )); then
   ROOT_DEFAULT_GIB=$SMALL_DISK_ROOT_GIB
