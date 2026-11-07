@@ -336,7 +336,12 @@ mount_target "$BOOT1" "$TARGET/boot"
 mkdir -p "$TARGET/boot/efi" "$TARGET/boot/efi2"
 mount_target "$ESP1" "$TARGET/boot/efi"
 mount_target "$ESP2" "$TARGET/boot/efi2"
+mkdir -p "$TARGET/boot/loader/entries"
 mount_target /dev/mapper/fedora-data1 "$TARGET$DATA_MOUNT"
+mkdir -p "$TARGET/dev" "$TARGET/proc" "$TARGET/sys" "$TARGET/run/lock"
+mount -t tmpfs tmpfs "$TARGET/run"
+MOUNTS+=("$TARGET/run")
+for filesystem in dev proc sys; do mount_bind "/$filesystem"; done
 
 hr
 echo "Install Fedora Server $FEDORA_VERSION into $TARGET."
@@ -347,7 +352,7 @@ DNF_INSTALLROOT=(dnf5 -y --use-host-config "--installroot=$TARGET" "--releasever
   fedora-release-server kernel dracut grubby grub2-efi-x64 grub2-efi-x64-modules \
   grub2-tools grub2-tools-extra shim-x64 efibootmgr cryptsetup \
   btrfs-progs tpm2-tools mokutil dosfstools NetworkManager sudo openssh-server \
-  firewalld policycoreutils rsync less vim-enhanced
+  firewalld policycoreutils rsync less vim-enhanced cracklib-dicts
 
 mkdir -p "$TARGET/etc" "$TARGET/etc/dracut.conf.d" \
   "$TARGET/etc/kernel" "$TARGET/etc/ssh/sshd_config.d" \
@@ -485,14 +490,10 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-mkdir -p "$TARGET/run/lock"
-mount -t tmpfs tmpfs "$TARGET/run"
-MOUNTS+=("$TARGET/run")
 printf '%s\n' "$USER_PASSWORD" > "$TARGET/run/installer-user-password"
 chmod 600 "$TARGET/run/installer-user-password"
 unset USER_PASSWORD
 
-for filesystem in dev proc sys; do mount_bind "/$filesystem"; done
 chroot "$TARGET" /usr/bin/bash -Eeuo pipefail -c '
   useradd -m -s /bin/bash -G wheel "$1"
   chpasswd < <(printf "%s:%s\n" "$1" "$(cat /run/installer-user-password)")
