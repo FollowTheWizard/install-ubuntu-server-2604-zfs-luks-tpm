@@ -340,7 +340,7 @@ mount_target /dev/mapper/fedora-data1 "$TARGET$DATA_MOUNT"
 
 hr
 echo "Install Fedora Server $FEDORA_VERSION into $TARGET."
-DNF_INSTALLROOT=(dnf5 -y "--installroot=$TARGET" "--releasever=$FEDORA_VERSION" \
+DNF_INSTALLROOT=(dnf5 -y --use-host-config "--installroot=$TARGET" "--releasever=$FEDORA_VERSION" \
   --setopt=install_weak_deps=False)
 "${DNF_INSTALLROOT[@]}" group install core
 "${DNF_INSTALLROOT[@]}" install \
