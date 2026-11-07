@@ -9,13 +9,13 @@ interchangeable and should not be combined into one installation.
 | Operating system | Disk layout (in brief) | Boot-media Secure Boot | TPM2 | Installer and guide |
 |---|---|---|---|---|
 | Ubuntu Server 26.04 | ext4 root on mdraid/LUKS2/LVM; separate LUKS2-backed ZFS mirror at `/data` | Enabled | Enroll after first boot | [Installer](./install-ubuntu-26.04-luks-root-zfs-data.sh) · [Guide](./README-ubuntu-26.04-luks-root.md) |
-| Fedora Server | ext4 root on mdraid/LUKS2/LVM; separate LUKS2-backed Btrfs RAID1 at `/data` | Enabled | Enroll after first boot | [Installer](./install-fedora-server-luks-root-btrfs-data.sh) · [Guide](./README-fedora-luks-root-btrfs-data.md) |
+| Fedora Server | Btrfs RAID1 `/boot`; separate LUKS2-backed Btrfs RAID1 filesystems for `/` and `/data` | Enabled | Enroll after first boot | [Installer](./install-fedora-server-luks-root-btrfs-data.sh) · [Guide](./README-fedora-luks-root-btrfs-data.md) |
 | Debian 13 | ZFS `bpool`, LUKS2-backed mirrored `rpool` and `dpool` | Disabled for installation; re-enable and enroll MOK before first installed boot | Optional; enroll after first boot | [Installer](./install-debian-13-zfs-luks-tpm.sh) · [Guide](./README-debian-13.md) |
 
 These are different designs, not interchangeable editions of one installer:
 Ubuntu and Fedora keep ZFS out of the root boot path, while Debian uses ZFS
-for `/boot` and root. Fedora uses native Btrfs for data because this path does
-not rely on an OpenZFS kernel module.
+for `/boot` and root. Fedora uses native Btrfs for `/boot`, the OS, and data
+because this path does not rely on an OpenZFS kernel module.
 
 The Ubuntu and Fedora installers are experimental and have not been
 boot-tested; the Debian installer is also not hardware-tested. Every installer
@@ -50,7 +50,7 @@ checkout. For reproducible installs, substitute a reviewed commit hash.
 - [`configure-fedora-btrfs-root-mirror.sh`](./configure-fedora-btrfs-root-mirror.sh)
   is a menu-driven post-install tool for a separate Fedora Btrfs-root design.
   It is not the Fedora installer above and is not compatible with that
-  installer's ext4-root layout. Its disk-setup phase erases the selected
+  installer's partition layout. Its disk-setup phase erases the selected
   secondary disk; inspect its phases and confirm the existing system layout
   before using it.
 - [`verify-legacy-ubuntu-zfs-root.sh`](./verify-legacy-ubuntu-zfs-root.sh)

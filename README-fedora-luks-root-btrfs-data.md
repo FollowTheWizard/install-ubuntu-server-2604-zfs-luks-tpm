@@ -1,19 +1,22 @@
-# Fedora Server — mirrored encrypted root and Btrfs data
+# Fedora Server — encrypted Btrfs RAID1 for OS and data
 
 This installer creates a Fedora Server system from Fedora live media and keeps
 Secure Boot enabled:
 
 - Two EFI System Partitions, one on each disk.
-- Mirrored, unencrypted ext4 `/boot` on mdraid RAID1.
-- Mirrored root mdraid RAID1 underneath one LUKS2 container, then LVM and ext4.
-- A separate LUKS2 container on each disk, combined as a Btrfs RAID1 filesystem
-  mounted at `/data`.
-- A post-install helper enrolls the root and data LUKS devices in TPM2. The same
-  LUKS passphrase remains available as recovery.
+- Unencrypted Btrfs RAID1 `/boot` on one partition per disk.
+- A separate LUKS2+Btrfs RAID1 filesystem for the OS root (`/`).
+- A separate LUKS2+Btrfs RAID1 filesystem for data (`/data`).
+- The installer asks for the OS partition size per disk (100 GiB default, or
+  64 GiB on smaller disks, reduced only if needed to fit);
+  `/data` uses the remaining capacity on each disk.
+- A post-install helper enrolls all four OS and data LUKS devices in TPM2. The
+  same LUKS passphrase remains available as recovery.
 
 Fedora's third-party OpenZFS kernel module is not used. Fedora does not ship a
 Secure-Boot-signed OpenZFS module, so this Fedora variant uses native Btrfs for
-data and does not need a local kernel-module signing key or MOK enrollment.
+`/boot`, the OS, and data and does not need a local kernel-module signing key or
+MOK enrollment.
 
 > **Experimental and destructive:** the installer erases both selected disks.
 > It has only been syntax/static checked, not boot-tested on hardware or in a VM.
@@ -25,7 +28,8 @@ data and does not need a local kernel-module signing key or MOK enrollment.
   The installer uses the live release's Fedora repositories to install Fedora
   Server packages into the target.
 - Two unmounted x86_64 disks. Each must fit a 1 GiB EFI partition, 2 GiB `/boot`,
-  64 GiB root mirror, and at least 8 GiB for Btrfs data.
+  at least 40 GiB for the OS and 8 GiB for Btrfs data. The installer proposes
+  100 GiB for the OS, or a smaller size if required by disk capacity.
 - Network access and TPM 2.0 exposed as `/dev/tpmrm0`.
 - Console access for the first passphrase boot and recovery testing.
 
@@ -45,17 +49,22 @@ bash -n install-fedora-server-luks-root-btrfs-data.sh
 sudo bash install-fedora-server-luks-root-btrfs-data.sh
 ```
 
-The script selects two disks interactively. Confirm model, capacity, and stable
-device path carefully: typing `YES` destroys both disks. It asks for an
-administrator password and one LUKS passphrase used by the root and both data
-devices.
+The script selects two disks interactively and asks for the OS partition size
+in GiB. The proposed default is 100 GiB per disk for the mirrored OS, or
+64 GiB on smaller disks; it is reduced further only if needed to fit the
+minimum 8 GiB data allocation. `/data` uses the remaining space. EFI defaults
+to 1 GiB and Btrfs `/boot` to 2 GiB on each disk. Confirm model, capacity,
+stable device path, and the displayed layout carefully: typing `YES` destroys
+both disks. It asks for an administrator password and one LUKS passphrase used
+by all four encrypted OS and data devices.
 
 The script detects the Fedora release from the live media and installs the
 matching Fedora Server package set into a fresh target. It does not use Anaconda
 or copy the live system.
 
-On the first installed-system boot, enter the LUKS passphrase. After logging in,
-enroll TPM2 PCR 7 for the root and both data devices:
+On the first installed-system boot, enter the LUKS passphrase for the OS
+members if prompted. After logging in, enroll TPM2 PCR 7 for all OS and data
+devices:
 
 ```bash
 sudo enroll-tpm2 7
@@ -69,17 +78,17 @@ and GRUB packages are the Fedora-signed packages.
 
 Use disposable drives and test every item before storing important data:
 
-1. Confirm `mokutil --sb-state` reports Secure Boot enabled and that `/` is
-   ext4 on LVM over LUKS/mdraid.
-2. Verify `cat /proc/mdstat` and `sudo mdadm --detail /dev/md0` and `/dev/md1`
-   show healthy mirrors.
-3. Verify `sudo btrfs filesystem show /data` reports both data devices as a
-   RAID1 filesystem.
+1. Confirm `mokutil --sb-state` reports Secure Boot enabled and that `/`,
+   `/boot`, and `/data` are Btrfs filesystems.
+2. Verify `sudo btrfs filesystem show /`, `/boot`, and `/data` report the
+   expected two devices, and `sudo btrfs filesystem usage /` reports RAID1
+   data and metadata profiles for the OS.
+3. Verify `/data` mounts and the root filesystem remains separate from it.
 4. Verify a normal TPM-unlocked boot, then test passphrase fallback.
 5. Install a kernel update, reboot, confirm `/data` mounts, and synchronize both
    EFI partitions with `sudo /usr/local/sbin/sync-efi`.
-6. Shut down, disconnect one disk, and verify firmware can boot from the other
-   disk and the root mirror starts degraded. Reconnect and verify recovery.
+6. Shut down, disconnect one disk, and test whether the firmware can boot from
+   the other disk and Btrfs mounts degraded. Reconnect and verify recovery.
 7. Test firmware/Secure Boot changes and verify passphrase recovery if TPM PCR
    measurements change.
 
@@ -89,16 +98,19 @@ actual machine.
 
 ## Layout and limitations
 
-The root is one LUKS2 container on a two-disk mdraid1 device. It contains the
-`fedora` volume group, a 4 GiB swap LV, and an approximately 60 GiB ext4 root
-LV. `/boot` is a separate ext4 mdraid1 array. Each disk has its own EFI System
-Partition; the installer copies Fedora's EFI files to both and registers a boot
-entry for each.
+Each disk has its own EFI System Partition and an unencrypted Btrfs `/boot`
+partition; `/boot` is one Btrfs RAID1 filesystem. The OS uses a separate LUKS2
+partition on each disk combined into an encrypted Btrfs RAID1 root filesystem.
+The chosen OS size is allocated equally on both disks. `/data` is a different
+encrypted Btrfs RAID1 filesystem using the remaining space. Its usable capacity
+is limited by the smaller data partition. The installer copies Fedora's EFI
+files to both ESPs and registers a boot entry for each.
 
-The `/data` filesystem is Btrfs RAID1 over two separately LUKS-encrypted
-partitions. Its usable capacity is limited by the smaller disk. The root and
-data devices share the same LUKS passphrase and are enrolled in TPM2 together.
-If TPM unlock is unavailable, the passphrase remains the recovery method.
+The OS and data devices share the same LUKS passphrase and can be enrolled in
+TPM2 together after first boot. If TPM unlock is unavailable, the passphrase
+remains the recovery method. No mdraid, LVM, ext4, or swap partition is used.
+Btrfs swapfiles have significant limitations on multi-device filesystems, so
+this RAID1 layout does not configure swap.
 
 The installer and degraded-boot, kernel-update, and device-replacement behavior
 have not been hardware-tested. Verify those scenarios on disposable drives
