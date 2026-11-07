@@ -76,7 +76,7 @@ disk_has_active_swap() {
 }
 close_stale_installer_mappings() {
   local name mapper dm sysfs_name slave slave_path backing target_partition
-  local matches_target slave_count found_target
+  local matches_target slave_count found_target mounted_targets
   local -a target_partitions=()
   for disk in "$DISK1" "$DISK2"; do
     while IFS= read -r target_partition; do
@@ -113,12 +113,15 @@ close_stale_installer_mappings() {
     done
     (( slave_count > 0 && matches_target == 1 )) || continue
 
-    if lsblk -nrpo MOUNTPOINT "$mapper" | grep -qE '^/'; then
-      die "$mapper is still mounted; unmount its filesystems before retrying."
+    mounted_targets=$(findmnt --noheadings --raw --source "$mapper" --output TARGET) \
+      || mounted_targets=""
+    if [[ -n $mounted_targets ]] \
+      || lsblk -nrpo MOUNTPOINT "$mapper" | grep -qE '^/'; then
+      die "$mapper is still mounted${mounted_targets:+ at $mounted_targets}; unmount it or reboot the live environment before retrying."
     fi
     echo "Releasing stale Btrfs device registration for $mapper."
     btrfs device scan --forget "$mapper" \
-      || die "Could not forget $mapper from Btrfs; verify it is not mounted before retrying."
+      || die "Btrfs still has $mapper in use. Inspect 'findmnt -t btrfs' and unmount the owning filesystem, or reboot the live environment before retrying."
     echo "Closing stale installer mapping $mapper."
     cryptsetup close "$name" \
       || die "Could not close $mapper; inspect its users before retrying."
