@@ -1,7 +1,8 @@
 # Fedora Server — encrypted Btrfs RAID1 for OS and data
 
-This installer creates a Fedora Server system from Fedora live media and keeps
-Secure Boot enabled:
+This installer creates a Fedora Server system from Fedora live media. Secure
+Boot is preferred but not mandatory; if it is disabled or its state cannot be
+read, the installer asks whether to continue:
 
 - Two EFI System Partitions, one on each disk.
 - Unencrypted Btrfs RAID1 `/boot` on one partition per disk.
@@ -24,9 +25,10 @@ MOK enrollment.
 
 ## Requirements
 
-- Fedora Workstation Live media, booted in UEFI mode with Secure Boot enabled.
-  The installer uses the live release's Fedora repositories to install Fedora
-  Server packages into the target.
+- Fedora Workstation Live media, booted in UEFI mode. The installer uses the
+  live release's Fedora repositories to install Fedora Server packages into
+  the target. Secure Boot is optional, which is useful in VMs where it may not
+  be available.
 - Two unmounted x86_64 disks. Each must fit a 1 GiB EFI partition, 2 GiB `/boot`,
   at least 40 GiB for the OS and 8 GiB for Btrfs data. The installer proposes
   100 GiB for the OS, or a smaller size if required by disk capacity.
@@ -35,8 +37,8 @@ MOK enrollment.
 
 ## Install
 
-Boot Fedora Workstation Live with Secure Boot enabled, connect to the network,
-open a terminal, and download and inspect the script:
+Boot Fedora Workstation Live in UEFI mode, connect to the network, open a
+terminal, and download and inspect the script:
 
 ```bash
 sudo dnf5 install -y curl
@@ -56,7 +58,11 @@ minimum 8 GiB data allocation. `/data` uses the remaining space. EFI defaults
 to 1 GiB and Btrfs `/boot` to 2 GiB on each disk. Confirm model, capacity,
 stable device path, and the displayed layout carefully: typing `YES` destroys
 both disks. It asks for an administrator password and one LUKS passphrase used
-by all four encrypted OS and data devices.
+by all four encrypted OS and data devices. If Secure Boot is disabled or its
+state cannot be determined, the installer warns that TPM2 PCR 7 enrollment may
+be affected by boot or Secure Boot configuration changes and asks whether to
+continue. Answer `y` to proceed, or press Enter to stop. It does not turn
+Secure Boot on or enforce it.
 
 The script detects the Fedora release from the live media and installs the
 matching Fedora Server package set into a fresh target. It does not use Anaconda
@@ -70,15 +76,16 @@ devices:
 sudo enroll-tpm2 7
 ```
 
-Reboot and verify TPM unlock. The LUKS passphrase remains a recovery method;
-keep it offline. Secure Boot must remain enabled. The installed Fedora shim
-and GRUB packages are the Fedora-signed packages.
+Reboot and verify TPM unlock. Keep the LUKS passphrase offline as a recovery
+method. The installed Fedora shim and GRUB packages are Fedora-signed. Keep
+the Secure Boot configuration consistent with the one used for TPM enrollment;
+if TPM unlock fails after a configuration change, use the LUKS passphrase.
 
 ## Verify before relying on it
 
 Use disposable drives and test every item before storing important data:
 
-1. Confirm `mokutil --sb-state` reports Secure Boot enabled and that `/`,
+1. Check `mokutil --sb-state` to record the Secure Boot state, and confirm `/`,
    `/boot`, and `/data` are Btrfs filesystems.
 2. Verify `sudo btrfs filesystem show /`, `/boot`, and `/data` report the
    expected two devices, and `sudo btrfs filesystem usage /` reports RAID1

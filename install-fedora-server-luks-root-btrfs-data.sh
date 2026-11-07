@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fedora Server: Btrfs RAID1 /boot, encrypted Btrfs RAID1 root and data.
-# Secure Boot stays enabled.
+# Secure Boot is preferred, but the user may choose to continue without it.
 # This installer destroys both selected disks. Hardware validation is required.
 # SPDX-License-Identifier: Apache-2.0
 set -Eeuo pipefail
@@ -118,11 +118,25 @@ secure_boot_state() {
   return 2
 }
 if secure_boot_state; then
-  :
+  echo "Secure Boot is enabled."
 else
   rc=$?
-  (( rc == 1 )) && die "Secure Boot is disabled. Enable it and reboot the live media before continuing."
-  die "Cannot determine Secure Boot state from UEFI variables; refusing to continue."
+  if (( rc == 1 )); then
+    echo "WARNING: Secure Boot is disabled."
+  else
+    echo "WARNING: Cannot determine Secure Boot state from UEFI variables."
+  fi
+  cat <<'EOF'
+The installed system uses Fedora-signed boot files, but continuing does not
+enable or enforce Secure Boot. TPM2 enrollment uses PCR 7; changes to the boot
+or Secure Boot configuration can prevent TPM unlock. The LUKS passphrase remains
+available for recovery.
+EOF
+  read -r -p "Continue without verified Secure Boot? [y/N]: " continue_without_secure_boot
+  case ${continue_without_secure_boot,,} in
+    y|yes) ;;
+    *) die "Stopped because Secure Boot is disabled or could not be verified." ;;
+  esac
 fi
 
 FEDORA_VERSION=$(rpm -E '%fedora')
@@ -212,7 +226,7 @@ LUKS_PASSWORD=$REPLY
 
 hr
 cat <<EOF
-Fedora Server $FEDORA_VERSION — Secure Boot remains enabled
+Fedora Server $FEDORA_VERSION — Secure Boot state is user-selected
   Disk 1: $DISK1 ($SIZE1 MiB)
   Disk 2: $DISK2 ($SIZE2 MiB)
   Per disk: ${EFI_MB} MiB EFI | ${BOOT_MB} MiB Btrfs /boot RAID1 | ${ROOT_GIB} GiB LUKS2+Btrfs OS RAID1 | remaining LUKS2+Btrfs data
@@ -502,7 +516,8 @@ done
 sync
 
 cat <<EOF
-Fedora installation files are ready. Remove the live media and boot with Secure Boot enabled.
+Fedora installation files are ready. Remove the live media and boot using the
+same Secure Boot configuration accepted during installation.
 Enter the LUKS passphrase for the first boot; TPM enrollment is intentionally deferred.
 
 After login, verify all Btrfs filesystems:
