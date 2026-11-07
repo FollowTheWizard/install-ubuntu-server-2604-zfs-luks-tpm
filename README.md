@@ -65,8 +65,8 @@ systems using its `bpool`/`rpool` design are unaffected.
 
 ## License and attribution
 
-The repository includes the **Apache License 2.0** in [LICENSE](LICENSE).
-Some files retain their original per-file license notices; see
-[LICENSE-MIT](LICENSE-MIT) and [NOTICE](NOTICE) for attribution and details.
+This repository's original files are licensed under the **Apache License 2.0**;
+see [LICENSE](LICENSE). Third-party software and dependencies remain subject to
+their own licenses.
 
 Provided **without warranty**; see the applicable license terms.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: Apache-2.0 — see LICENSE and NOTICE.
+# SPDX-License-Identifier: Apache-2.0 — see LICENSE.
 # Derived from FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm (samba-user.sh);
 # modified (Apache-2.0 §4b). NOT tested against a real Samba installation.
 # Changes vs. the original:

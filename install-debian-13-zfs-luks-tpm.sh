@@ -3,7 +3,8 @@
 #  Debian 13 (trixie) — interactive installer
 #  2-disk ZFS mirror · LUKS2 FDE · unlock by passphrase OR TPM2 · dracut · GRUB/UEFI
 #  LAYOUT: 64 GiB OS (rpool) + remaining data (dpool), both mirrored on LUKS2
-#  SPDX-License-Identifier: MIT — NO WARRANTY. DESTROYS DATA on the disks you select.
+#  SPDX-License-Identifier: Apache-2.0
+#  NO WARRANTY. DESTROYS DATA on the disks you select.
 #
 #  Boot the Debian 13 live ISO in UEFI mode with Secure Boot temporarily disabled →
 #     run installer; re-enable Secure Boot before the first installed boot.

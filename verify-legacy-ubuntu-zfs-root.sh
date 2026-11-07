@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  verify-legacy-ubuntu-zfs-root.sh rev 5 (patched copy of upstream verify.sh rev 4)
-#  SPDX-License-Identifier: Apache-2.0 — see LICENSE and NOTICE.
+#  SPDX-License-Identifier: Apache-2.0 — see LICENSE.
 #  Derived from FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm (verify.sh rev 4).
 #  Written for installer rev. 9.0-p1. NOT tested on real hardware.
 #

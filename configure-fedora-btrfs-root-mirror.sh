@@ -2,6 +2,7 @@
 # ==============================================================================
 # Fedora Server Btrfs-root mirror configuration + LUKS2 + TPM2 (v5)
 # Menügeführt, alles Ermittelbare wird automatisch erkannt, du entscheidest nur.
+# SPDX-License-Identifier: Apache-2.0
 # ==============================================================================
 set -euo pipefail
 
