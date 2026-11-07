@@ -105,7 +105,12 @@ trap cleanup EXIT
 [[ $(uname -m) == x86_64 ]] || die "Only x86_64 is supported."
 [[ -d /sys/firmware/efi ]] || die "Boot the Fedora live media in UEFI mode."
 [[ -c /dev/tpmrm0 ]] || die "TPM2 resource-manager device /dev/tpmrm0 is required."
-[[ ! -e $TARGET ]] || die "$TARGET already exists; choose an unused mount path."
+if [[ -e $TARGET || -L $TARGET ]]; then
+  [[ -d $TARGET && ! -L $TARGET ]] || die "$TARGET exists but is not a real directory."
+  mountpoint -q "$TARGET" && die "$TARGET is already a mountpoint."
+  [[ -z $(find "$TARGET" -mindepth 1 -maxdepth 1 -print -quit) ]] \
+    || die "$TARGET is not empty; refusing to use it as the installation mountpoint."
+fi
 
 secure_boot_state() {
   local efivar value
@@ -427,7 +432,8 @@ mkdir -p "$TARGET/usr/local/sbin" "$TARGET/etc/systemd/system"
 cat > "$TARGET/usr/local/sbin/sync-efi" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-mountpoint -q /boot/efi2 || { echo "Secondary ESP is not mounted; skipping sync." >&2; exit 1; }
+mountpoint -q /boot/efi || { echo "Primary ESP is not mounted; refusing to sync." >&2; exit 1; }
+mountpoint -q /boot/efi2 || { echo "Secondary ESP is not mounted; refusing to sync." >&2; exit 1; }
 rsync -a --delete /boot/efi/ /boot/efi2/
 EOF
 chmod 755 "$TARGET/usr/local/sbin/sync-efi"

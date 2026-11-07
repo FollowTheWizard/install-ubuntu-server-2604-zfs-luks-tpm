@@ -67,7 +67,9 @@ Secure Boot on or enforce it.
 
 The script detects the Fedora release from the live media and installs the
 matching Fedora Server package set into a fresh target. It does not use Anaconda
-or copy the live system.
+or copy the live system. If a previous attempt left the default mount directory
+`/mnt/fedora-install` behind, the installer reuses it only when it is an empty,
+unmounted directory.
 
 On the first installed-system boot, enter the LUKS passphrase for the OS
 members if prompted. After logging in, enroll TPM2 PCR 7 for all OS and data
