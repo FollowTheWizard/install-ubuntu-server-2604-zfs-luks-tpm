@@ -14,6 +14,12 @@ readonly HOSTS_BACKUP=/etc/hosts.pre-proxmox
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
 
+update_package_lists() {
+  if ! apt-get update -o APT::Update::Error-Mode=any; then
+    die "APT could not refresh every repository. Resolve the reported network, proxy, or certificate error before continuing."
+  fi
+}
+
 [[ $EUID -eq 0 ]] || die "run as root (sudo -i)"
 [[ -r /etc/os-release ]] || die "cannot identify the operating system"
 # shellcheck disable=SC1091
@@ -137,15 +143,17 @@ install_repository() {
   fi
 
   if [[ -e $PVE_REPO_FILE ]]; then
-    grep -Fq 'URIs: https://download.proxmox.com/debian/pve' "$PVE_REPO_FILE" \
+    grep -Eq '^URIs: https?://download\.proxmox\.com/debian/pve$' "$PVE_REPO_FILE" \
       && grep -Fq 'Suites: trixie' "$PVE_REPO_FILE" \
       && grep -Fq 'Components: pve-no-subscription' "$PVE_REPO_FILE" \
       && grep -Fq "Signed-By: $PVE_KEY_FILE" "$PVE_REPO_FILE" \
       || die "$PVE_REPO_FILE already exists with different settings; inspect it manually"
+    sed -i 's|^URIs: https://download.proxmox.com/debian/pve$|URIs: http://download.proxmox.com/debian/pve|' \
+      "$PVE_REPO_FILE"
   else
     cat > "$PVE_REPO_FILE" <<'EOF'
 Types: deb
-URIs: https://download.proxmox.com/debian/pve
+URIs: http://download.proxmox.com/debian/pve
 Suites: trixie
 Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
@@ -211,10 +219,12 @@ EOF
 confirm_install
 setup_hosts_entry
 install_repository
+disable_enterprise_repository
 
 info "updating Debian and installing the Proxmox kernel"
-apt-get update
+update_package_lists
 apt-get full-upgrade -y
+update_package_lists
 apt-get install -y proxmox-default-kernel
 PVE_KERNEL=$(find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
   | awk '/^[0-9].*-pve$/ { print }' | sort -V | tail -n 1)
@@ -242,9 +252,8 @@ grep -Fq "vmlinuz-$PVE_KERNEL" /boot/grub/grub.cfg \
   || die "GRUB configuration does not contain the Proxmox kernel"
 
 info "installing Proxmox VE packages (configure postfix when prompted)"
-apt-get update
+update_package_lists
 apt-get install -y proxmox-ve postfix open-iscsi chrony
-disable_enterprise_repository
 
 PVE_KERNEL=$(find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
   | awk '/^[0-9].*-pve$/ { print }' | sort -V | tail -n 1)

@@ -99,6 +99,12 @@ installer for a standard supported installation. Before running the add-on:
   Debian kernels. If the script reports a newer Proxmox kernel, reboot into
   that exact version and run it again. If a Proxmox kernel does not boot,
   select the Debian fallback kernel from GRUB and do not continue.
+- If an earlier script run failed with `Package proxmox-default-kernel cannot
+  be located` after a Proxmox repository TLS error, download the updated script
+  and rerun it. It migrates its Proxmox source to the HTTP URL used in the
+  official guide, keeps APT signature verification enabled, and stops if any
+  repository index cannot be refreshed. Do not disable certificate checks or
+  install packages from unverified sources.
 
 Run it from the installed Debian system:
 
