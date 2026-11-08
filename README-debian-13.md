@@ -109,6 +109,10 @@ installer for a standard supported installation. Before running the add-on:
   `btrfs`, download the updated script and rerun it. The check now accepts
   Debian dracut's numbered module names (such as `90btrfs`) as well as
   unnumbered names, and still stops if the required module is actually absent.
+- If an add-on run exits with a package or hook error, do not remove Debian
+  kernels manually. Re-run the updated script from the running Proxmox kernel;
+  it reports the command that failed and can resume after a corrected package
+  or hook issue. Keep console access and the Debian GRUB fallback available.
 
 Run it from the installed Debian system:
 

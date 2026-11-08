@@ -5,6 +5,14 @@
 # SPDX-License-Identifier: Apache-2.0
 set -Eeuo pipefail
 
+on_error() {
+  local status=$?
+  printf 'ERROR: command failed with exit status %s: %s\n' \
+    "$status" "$BASH_COMMAND" >&2
+  exit "$status"
+}
+trap on_error ERR
+
 readonly PVE_KEY_URL=https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
 readonly PVE_KEY_SHA256=136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45
 readonly PVE_REPO_FILE=/etc/apt/sources.list.d/pve-install-repo.sources
