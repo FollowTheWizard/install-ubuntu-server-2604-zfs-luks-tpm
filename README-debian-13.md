@@ -73,6 +73,48 @@ sudo btrfs scrub start /boot
 LUKS passphrase offline; TPM unlock is not a replacement for a recovery
 passphrase.
 
+## Optional: Proxmox VE on this Debian baseline
+
+The separate
+[Proxmox add-on](./install-proxmox-ve-on-debian-13-btrfs.sh) installs Proxmox
+VE without repartitioning the disks. It follows the
+[Proxmox Debian 13 guide](https://pve.proxmox.com/wiki/Install_Proxmox_VE_on_Debian_13_Trixie),
+with an additional reboot gate so the Proxmox kernel is checked before Debian
+kernels are removed.
+
+This is an optional, untested path; the Proxmox guide recommends its bare-metal
+installer for a standard supported installation. Before running the add-on:
+
+- Make a recoverable backup and ensure local-console or out-of-band access.
+- Disable Secure Boot in firmware and leave it disabled while booting the
+  Proxmox kernel. This changes PCR 7; if TPM unlock was
+  enrolled against PCR 7, use the LUKS passphrase and re-enroll TPM after the
+  Proxmox installation and Secure Boot policy are settled.
+- Configure a static address or DHCP reservation for the host. The add-on
+  verifies that the address is currently assigned and adds the hostname
+  mapping to `/etc/hosts`; it does not change network interface configuration.
+- Expect the Debian package upgrade and a reboot. The script first installs
+  and validates a Proxmox kernel, then stops. Reboot, confirm `uname -r` ends
+  in `-pve`, and run the same script again to install Proxmox VE and remove the
+  Debian kernels. If the script reports a newer Proxmox kernel, reboot into
+  that exact version and run it again. If a Proxmox kernel does not boot,
+  select the Debian fallback kernel from GRUB and do not continue.
+
+Run it from the installed Debian system:
+
+```bash
+curl -fLO https://raw.githubusercontent.com/FollowTheWizard/install-ubuntu-server-2604-zfs-luks-tpm/main/install-proxmox-ve-on-debian-13-btrfs.sh
+bash -n install-proxmox-ve-on-debian-13-btrfs.sh
+sudo bash install-proxmox-ve-on-debian-13-btrfs.sh
+```
+
+After installation, set up a Linux bridge named `vmbr0` and attach the physical
+NIC using Proxmox's network configuration documentation. The add-on leaves
+existing networking untouched to avoid disconnecting a remote session. The
+Proxmox UI is available at `https://<node-address>:8006`; log in as `root` with
+the PAM realm. The script prompts to set a root password if the account is
+still locked.
+
 ## ZFS installer
 
 The repository also retains [the original Debian ZFS installer](./install-debian-13-zfs-luks-tpm.sh).

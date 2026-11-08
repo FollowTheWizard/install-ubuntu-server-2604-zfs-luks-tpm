@@ -23,6 +23,12 @@ boot-tested; the Debian installer is also not hardware-tested. Every installer
 erases the two disks you select. Treat all of them as untrusted until you have
 completed the relevant guide's tests on disposable disks.
 
+The Debian Btrfs installation can optionally be extended with Proxmox VE using
+the separate [Proxmox add-on script](./install-proxmox-ve-on-debian-13-btrfs.sh).
+It does not repartition disks. Secure Boot must stay disabled while booting the
+Proxmox kernel, and the node needs a stable address. The script installs the
+kernel in a first stage that must be boot-tested before the second stage.
+
 ## General installation workflow
 
 1. Read the selected operating-system guide completely. Confirm its release,
@@ -61,6 +67,9 @@ checkout. For reproducible installs, substitute a reviewed commit hash.
 - [`manage-samba-users.sh`](./manage-samba-users.sh) manages Samba accounts
   (`add`, `remove`, `passwd`, `disable`, `enable`, and `list`) on a system
   where Samba is already installed. It is unrelated to OS installation.
+- [`install-proxmox-ve-on-debian-13-btrfs.sh`](./install-proxmox-ve-on-debian-13-btrfs.sh)
+  optionally installs Proxmox VE on the Debian Btrfs baseline. Read the
+  Proxmox section in [the Debian guide](./README-debian-13.md) before use.
 
 The former Ubuntu ZFS-root installer is retired from this branch. Existing
 systems using its `bpool`/`rpool` design are unaffected.
