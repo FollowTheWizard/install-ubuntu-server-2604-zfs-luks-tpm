@@ -105,6 +105,10 @@ installer for a standard supported installation. Before running the add-on:
   official guide, keeps APT signature verification enabled, and stops if any
   repository index cannot be refreshed. Do not disable certificate checks or
   install packages from unverified sources.
+- If an earlier run stopped because the initrd was reported to be missing
+  `btrfs`, download the updated script and rerun it. The check now accepts
+  Debian dracut's numbered module names (such as `90btrfs`) as well as
+  unnumbered names, and still stops if the required module is actually absent.
 
 Run it from the installed Debian system:
 

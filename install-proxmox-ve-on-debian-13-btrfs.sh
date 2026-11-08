@@ -186,13 +186,20 @@ sync_secondary_efi() {
 }
 
 verify_pve_initrd() {
-  local kver=$1 image module
+  local kver=$1 image module pattern modules
   image="/boot/initrd.img-$kver"
   [[ -s /boot/vmlinuz-"$kver" ]] || die "Proxmox kernel image is missing for $kver"
   dracut --force "$image" "$kver"
   [[ -s $image ]] || die "dracut did not create $image"
+  modules=$(lsinitrd -m "$image") \
+    || die "could not read the dracut module list from $image"
   for module in btrfs crypt tpm2-tss; do
-    lsinitrd -m "$image" | grep -Fxq "$module" \
+    case $module in
+      btrfs) pattern='^(90)?btrfs$' ;;
+      crypt) pattern='^(90)?crypt$' ;;
+      tpm2-tss) pattern='^(91)?tpm2-tss$' ;;
+    esac
+    printf '%s\n' "$modules" | grep -Eq "$pattern" \
       || die "the initrd for $kver is missing the dracut module '$module'"
   done
 }
