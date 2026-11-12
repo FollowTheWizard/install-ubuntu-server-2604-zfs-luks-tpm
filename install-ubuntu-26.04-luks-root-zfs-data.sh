@@ -8,7 +8,7 @@ trap 'rc=$?; printf "Installer failed at line %s (status %s).\n" "$LINENO" "$rc"
 
 SUITE=resolute
 MIRROR=https://archive.ubuntu.com/ubuntu
-SECURITY_MIRROR=http://security.ubuntu.com/ubuntu
+SECURITY_MIRROR=https://security.ubuntu.com/ubuntu
 TARGET=/mnt
 EFI_MB=1024
 BOOT_MB=2048
@@ -38,6 +38,7 @@ ask_secret() {
 
 [[ $EUID -eq 0 ]] || die "Run as root."
 [[ -d /sys/firmware/efi ]] || die "Boot the Ubuntu Server live installer in UEFI mode."
+[[ $(dpkg --print-architecture) == amd64 ]] || die "This installer currently supports amd64 only."
 
 secure_boot_state() {
   local efivar value
@@ -268,6 +269,7 @@ zpool create -f -R "$TARGET" -o ashift=12 -o autotrim=on \
   -O atime=off -O mountpoint=none "$POOL" mirror \
   /dev/mapper/luks-zfs1 /dev/mapper/luks-zfs2
 zfs create -o mountpoint=/data "$POOL/data"
+zpool status "$POOL"
 zpool export "$POOL"
 
 for filesystem in dev proc sys; do
@@ -277,7 +279,11 @@ done
 mount -t tmpfs tmpfs "$TARGET/run"
 mkdir -p "$TARGET/run/lock"
 rm -f "$TARGET/etc/resolv.conf"
-cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+if [[ -r /run/systemd/resolve/resolv.conf ]]; then
+  cp /run/systemd/resolve/resolv.conf "$TARGET/etc/resolv.conf"
+else
+  cp -L /etc/resolv.conf "$TARGET/etc/resolv.conf"
+fi
 printf '%s\n' "$USER_PASSWORD" > "$TARGET/run/installer-user-password"
 chmod 600 "$TARGET/run/installer-user-password"
 
@@ -317,6 +323,10 @@ apt-get install -y --no-install-recommends \
   ubuntu-minimal openssh-server sudo netplan.io systemd-resolved \
   rsync curl less vim-tiny bash-completion ufw
 
+systemctl enable systemd-resolved.service
+rm -f /etc/resolv.conf
+ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
 sed -i 's|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX="root=/dev/mapper/vgubuntu-root rd.md=1 rd.md.uuid='"$MD_BOOT_ID"' rd.md.uuid='"$MD_ROOT_ID"' rd.luks.uuid=luks-'"$ROOT_LUKS_UUID"'"|' /etc/default/grub
 sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=""|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT_STYLE=.*|GRUB_TIMEOUT_STYLE=menu|' /etc/default/grub
@@ -326,6 +336,7 @@ cat > /etc/systemd/system/zfs-import-dpool.service <<'EOS'
 [Unit]
 Description=Import encrypted ZFS data pool
 DefaultDependencies=no
+Wants=cryptsetup.target
 After=systemd-udev-settle.service cryptsetup.target
 After=systemd-cryptsetup@luks\x2dzfs1.service
 After=systemd-cryptsetup@luks\x2dzfs2.service
@@ -335,7 +346,7 @@ Before=zfs-mount.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/sbin/modprobe zfs
-ExecStart=/usr/sbin/zpool import -N dpool
+ExecStart=/usr/sbin/zpool import -N -d /dev/mapper/luks-zfs1 -d /dev/mapper/luks-zfs2 dpool
 
 [Install]
 WantedBy=zfs-import.target
@@ -356,12 +367,34 @@ DPkg::Post-Invoke { "if mountpoint -q /boot/efi2; then /usr/local/sbin/sync-efi;
 EOS
 
 dracut --force --regenerate-all
+mapfile -t installed_kernels < <(find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
+((${#installed_kernels[@]} > 0)) || { echo "ERROR: no installed kernel modules found." >&2; exit 1; }
+for kernel in "${installed_kernels[@]}"; do
+  initrd="/boot/initrd.img-$kernel"
+  [[ -s $initrd ]] || { echo "ERROR: dracut did not create $initrd." >&2; exit 1; }
+  dracut_modules=$(lsinitrd -m "$initrd")
+  for required_module in mdraid crypt lvm tpm2-tss; do
+    grep -Fxq "$required_module" <<<"$dracut_modules" || {
+      echo "ERROR: initramfs for $kernel is missing dracut module $required_module." >&2
+      exit 1
+    }
+  done
+done
 update-grub
 grub-install --target=x86_64-efi --efi-directory=/boot/efi \
   --bootloader-id=ubuntu --no-nvram --recheck --uefi-secure-boot
 grub-install --target=x86_64-efi --efi-directory=/boot/efi2 \
   --bootloader-id=ubuntu --no-nvram --recheck --uefi-secure-boot
 rsync -a --delete /boot/efi/ /boot/efi2/
+grub-script-check /boot/grub/grub.cfg
+for esp in /boot/efi /boot/efi2; do
+  for efi_file in EFI/ubuntu/shimx64.efi EFI/ubuntu/grubx64.efi; do
+    [[ -s "$esp/$efi_file" ]] || {
+      echo "ERROR: missing Secure Boot loader $esp/$efi_file." >&2
+      exit 1
+    }
+  done
+done
 
 useradd -m -s /bin/bash -G sudo,adm "$NEW_USER"
 chpasswd < <(printf '%s:%s\n' "$NEW_USER" "$(cat /run/installer-user-password)")

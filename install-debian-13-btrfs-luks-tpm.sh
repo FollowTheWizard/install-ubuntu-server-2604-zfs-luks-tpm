@@ -466,8 +466,8 @@ UUID=$ROOT_UUID      /var/tmp   btrfs  subvol=@var-tmp,compress=zstd:3,noatime,d
 UUID=$ROOT_UUID      /srv       btrfs  subvol=@srv,compress=zstd:3,noatime,degraded  0 0
 UUID=$ROOT_UUID      /tmp       btrfs  subvol=@tmp,compress=zstd:3,noatime,degraded  0 0
 UUID=$ROOT_UUID      /root      btrfs  subvol=@root,compress=zstd:3,noatime,degraded  0 0
-UUID=$DATA_UUID      /home      btrfs  subvol=@home,compress=zstd:3,noatime,degraded  0 0
-UUID=$DATA_UUID      /data      btrfs  subvol=@data,compress=zstd:3,noatime,degraded  0 0
+UUID=$DATA_UUID      /home      btrfs  subvol=@home,compress=zstd:3,noatime,degraded,x-systemd.after=systemd-cryptsetup@luks\x2ddata1.service,x-systemd.after=systemd-cryptsetup@luks\x2ddata2.service  0 0
+UUID=$DATA_UUID      /data      btrfs  subvol=@data,compress=zstd:3,noatime,degraded,x-systemd.after=systemd-cryptsetup@luks\x2ddata1.service,x-systemd.after=systemd-cryptsetup@luks\x2ddata2.service  0 0
 PARTUUID=$PU_ESP1    /boot/efi  vfat   umask=0077  0 1
 PARTUUID=$PU_ESP2    /boot/efi2 vfat   umask=0077,nofail  0 1
 /dev/mapper/swap1    none       swap   sw,nofail  0 0

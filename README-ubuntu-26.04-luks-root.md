@@ -12,9 +12,11 @@ path:
   LUKS passphrase remains available as recovery.
 
 > **Experimental and destructive:** the installer erases both selected disks.
-> It has passed syntax and static checks only; it has not been boot-tested in a
-> VM or on hardware. Do not use it with important data until the complete test
-> matrix below passes on disposable drives.
+> It checks that generated initramfs images contain the required dracut modules
+> and that both ESPs contain shim and GRUB EFI loaders. Those checks do not
+> prove that the system boots. It has not been boot-tested in a VM or on
+> hardware. Do not use it with important data until the complete test matrix
+> below passes on disposable drives.
 
 ## Requirements
 
@@ -106,6 +108,18 @@ Its usable capacity is limited by the smaller disk; any extra capacity on a
 larger disk is left unused. The root and data devices share the same LUKS
 passphrase and are enrolled in TPM2 together. If TPM unlock is unavailable,
 expect passphrase prompts for the encrypted devices.
+
+For chroot package installation, the script prefers the live system's upstream
+DNS configuration when available. It then configures the installed system to
+use `systemd-resolved` rather than retaining the live environment's resolver.
+The ZFS import unit waits for the LUKS devices and scans only their mapper
+paths, avoiding an unrelated pool with the same name.
+
+The supplied ZFS reference uses ZFS for root on Ubuntu 23.10, while the
+Hetzner guide targets Ubuntu 24.04 and its `installimage` workflow. They are
+useful references for the LUKS/ZFS and encrypted-boot building blocks, but
+neither validates this Ubuntu 26.04 layout. This installer keeps ZFS out of the
+root boot path and uses Ubuntu's signed ZFS kernel modules for the data pool.
 
 The installer has not been tested for degraded boot, kernel updates, or device
 replacement. The repository's [legacy verifier](./verify-legacy-ubuntu-zfs-root.sh) is a checker
