@@ -83,9 +83,8 @@ disk_size_mib() { echo $(( $(blockdev --getsize64 "$1") / 1048576 )); }
 hr
 echo "Install tools and confirm the signed ZFS module can load with Secure Boot enabled."
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends \
   debootstrap gdisk mdadm lvm2 cryptsetup zfsutils-linux \
-  "linux-modules-zfs-$(uname -r)" linux-modules-zfs-generic \
   dosfstools efibootmgr rsync util-linux
 modprobe zfs || die "The Ubuntu-signed ZFS module could not load with Secure Boot enabled; no target disks have been changed."
 
@@ -293,6 +292,7 @@ cat > "$TARGET/root/target-setup.sh" <<'CHROOT'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=l
 
 echo "$NEW_HOSTNAME" > /etc/hostname
 printf '127.0.0.1 localhost\n127.0.1.1 %s\n::1 localhost ip6-localhost ip6-loopback\n' \
@@ -322,9 +322,14 @@ apt-get install -y --no-install-recommends \
   linux-generic linux-headers-generic \
   mdadm lvm2 cryptsetup systemd-cryptsetup systemd-sysv tpm2-tools \
   grub-efi-amd64 grub-efi-amd64-signed shim-signed efibootmgr dosfstools \
-  zfsutils-linux linux-modules-zfs-generic zfs-zed \
+  zfsutils-linux zfs-zed \
   ubuntu-minimal openssh-server sudo netplan.io systemd-resolved \
   rsync curl less vim-tiny bash-completion ufw
+
+find /lib/modules -name 'zfs.ko*' | grep -q . || {
+  echo "ERROR: signed ZFS kernel module not found under /lib/modules." >&2
+  exit 1
+}
 
 systemctl enable systemd-resolved.service
 rm -f /etc/resolv.conf
