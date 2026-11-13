@@ -81,6 +81,70 @@ stable_id() {
 }
 disk_size_mib() { echo $(( $(blockdev --getsize64 "$1") / 1048576 )); }
 
+collect_holders() {
+  local dev_path=$1
+  local real_dev base holder
+  real_dev=$(readlink -f "$dev_path" 2>/dev/null) || return 0
+  base=$(basename "$real_dev")
+  for holder in /sys/class/block/"$base"/holders/*; do
+    [[ -e $holder ]] || continue
+    printf '%s\n' "$(basename "$holder")"
+    collect_holders "/dev/$(basename "$holder")"
+  done
+}
+
+release_holders() {
+  local dev_path=$1
+  local real_dev base holder holder_base holder_dev dm_name vg_name
+  real_dev=$(readlink -f "$dev_path" 2>/dev/null) || return 0
+  base=$(basename "$real_dev")
+  for holder in /sys/class/block/"$base"/holders/*; do
+    [[ -e $holder ]] || continue
+    holder_base=$(basename "$holder")
+    holder_dev="/dev/$holder_base"
+    release_holders "$holder_dev"
+    swapoff "$holder_dev" 2>/dev/null || true
+    if [[ $holder_base == dm-* ]]; then
+      dm_name=$(dmsetup info -c --noheadings -o name "$holder_dev" 2>/dev/null || true)
+      vg_name=$(lvs --noheadings -o vg_name "$holder_dev" 2>/dev/null | tr -d '[:space:]' || true)
+      if [[ -n $vg_name ]]; then
+        vgchange -an "$vg_name" 2>/dev/null || true
+      fi
+      if [[ -n $dm_name ]]; then
+        cryptsetup close "$dm_name" 2>/dev/null || dmsetup remove --force "$dm_name" 2>/dev/null || true
+      fi
+    elif [[ $holder_base == md* ]]; then
+      mdadm --stop "$holder_dev" 2>/dev/null || true
+    fi
+  done
+}
+
+teardown_selected_disks() {
+  local disk dev
+  if mountpoint -q "$TARGET" || findmnt -rn -o TARGET | grep -qE "^${TARGET}(/|$)"; then
+    umount -R "$TARGET" 2>/dev/null || umount -l "$TARGET" 2>/dev/null || true
+  fi
+  for disk in "$@"; do
+    while IFS= read -r dev; do
+      [[ -n $dev ]] || continue
+      swapoff "$dev" 2>/dev/null || true
+    done < <(lsblk -nrpo NAME "$disk")
+  done
+  if command -v zpool >/dev/null 2>&1; then
+    while IFS= read -r pool; do
+      [[ -n $pool ]] || continue
+      zpool export -f "$pool" 2>/dev/null || true
+    done < <(zpool list -H -o name 2>/dev/null || true)
+  fi
+  for disk in "$@"; do
+    while IFS= read -r dev; do
+      [[ -n $dev ]] || continue
+      release_holders "$dev"
+    done < <(lsblk -nrpo NAME "$disk")
+  done
+  udevadm settle
+}
+
 hr
 echo "Scanning block devices (minimum required size per disk: ${MIN_DISK_MB} MiB)..."
 mapfile -t DISKS < <(lsblk -dpno NAME,TYPE | awk '$2 == "disk" {print $1}' \
@@ -93,26 +157,9 @@ for disk in "${DISKS[@]}"; do
   model_str=$(lsblk -dno MODEL "$disk" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//' || true)
   [[ -n $model_str ]] || model_str="Unknown model"
 
-  active_mounts=$(lsblk -nrpo MOUNTPOINT "$disk" | grep -E '^(/|\[SWAP\])' | paste -sd ', ' - || true)
-  if [[ -n $active_mounts ]]; then
-    printf '  [SKIP] %-14s %8s  %-24s (in use: %s)\n' "$disk" "$size_str" "$model_str" "$active_mounts"
-    SKIPPED_COUNT=$(( SKIPPED_COUNT + 1 ))
-    continue
-  fi
-
-  active_holders=()
-  while IFS= read -r child; do
-    [[ -n $child ]] || continue
-    child_base=$(basename "$(readlink -f "$child")")
-    for holder in /sys/class/block/"$child_base"/holders/*; do
-      if [[ -e $holder ]]; then
-        active_holders+=("$(basename "$holder")")
-      fi
-    done
-  done < <(lsblk -nrpo NAME "$disk")
-  if (( ${#active_holders[@]} > 0 )); then
-    printf '  [SKIP] %-14s %8s  %-24s (active holders: %s)\n' \
-      "$disk" "$size_str" "$model_str" "${active_holders[*]}"
+  system_mounts=$(lsblk -nrpo MOUNTPOINT "$disk" | grep -E '^/' | grep -vE "^${TARGET}(/|$)" | paste -sd ', ' - || true)
+  if [[ -n $system_mounts ]]; then
+    printf '  [SKIP] %-14s %8s  %-24s (in use: %s)\n' "$disk" "$size_str" "$model_str" "$system_mounts"
     SKIPPED_COUNT=$(( SKIPPED_COUNT + 1 ))
     continue
   fi
@@ -125,9 +172,24 @@ for disk in "${DISKS[@]}"; do
     continue
   fi
 
+  notes=()
+  target_mounts=$(lsblk -nrpo MOUNTPOINT "$disk" | grep -E "^${TARGET}(/|$)" | paste -sd ',' - || true)
+  [[ -n $target_mounts ]] && notes+=("mounted:$target_mounts")
+  lsblk -nrpo MOUNTPOINT "$disk" | grep -Fxq '[SWAP]' && notes+=("swap")
+  mapfile -t existing_holders < <(
+    while IFS= read -r child; do
+      [[ -n $child ]] || continue
+      collect_holders "$child"
+    done < <(lsblk -nrpo NAME "$disk") | sort -u
+  )
+  (( ${#existing_holders[@]} > 0 )) && notes+=("holders:${existing_holders[*]}")
+
+  note_str=""
+  (( ${#notes[@]} > 0 )) && note_str=" [existing: ${notes[*]}]"
+
   ELIGIBLE+=("$disk")
-  printf '  [%2d]   %-14s %8s  %-24s %s\n' \
-    "${#ELIGIBLE[@]}" "$disk" "$size_str" "$model_str" "$(stable_id "$disk")"
+  printf '  [%2d]   %-14s %8s  %-24s %s%s\n' \
+    "${#ELIGIBLE[@]}" "$disk" "$size_str" "$model_str" "$(stable_id "$disk")" "$note_str"
 done
 
 if (( ${#ELIGIBLE[@]} < 2 )); then
@@ -136,7 +198,6 @@ if (( ${#ELIGIBLE[@]} < 2 )); then
 ERROR: Found ${#ELIGIBLE[@]} eligible target disk(s) (2 required; ${SKIPPED_COUNT} skipped).
 Possible causes:
   - Only one physical drive is connected or enabled in UEFI/BIOS (check SATA/M.2 cables and AHCI mode).
-  - A target disk has active swap or RAID/LVM/LUKS holders (run 'swapoff -a' or stop arrays before retrying).
   - One of the drives is smaller than the minimum ${MIN_DISK_MB} MiB layout requirement.
 EOF
   exit 1
@@ -199,7 +260,7 @@ Ubuntu 26.04 ($SUITE) — Secure Boot remains enabled
   TPM2: enrollment is deferred until the installed system boots; root and data passphrase slots remain
   Disk size difference: unused ZFS-member capacity on the larger disk is not allocated elsewhere
 
-ALL DATA ON BOTH DISKS WILL BE DESTROYED.
+ALL DATA AND EXISTING ARRAYS/VOLUMES ON BOTH DISKS WILL BE DESTROYED.
 EOF
 hr
 read -r -p "Type YES to erase both disks and install: " confirmation
@@ -207,13 +268,22 @@ read -r -p "Type YES to erase both disks and install: " confirmation
 
 for disk in "$DISK1" "$DISK2"; do
   [[ -b $disk ]] || die "Target is no longer a block device: $disk"
+  if lsblk -nrpo MOUNTPOINT "$disk" | grep -E '^/' | grep -vqE "^${TARGET}(/|$)"; then
+    die "$disk or one of its partitions has an active system mount; refusing to erase it."
+  fi
+done
+
+echo "Deactivating any existing arrays, volumes, or mounts on selected disks..."
+teardown_selected_disks "$DISK1" "$DISK2"
+
+for disk in "$DISK1" "$DISK2"; do
   if lsblk -nrpo MOUNTPOINT "$disk" | grep -qE '^(/|\[SWAP\])'; then
-    die "$disk or one of its partitions became mounted; refusing to erase it."
+    die "$disk or one of its partitions could not be unmounted; refusing to erase it."
   fi
   mapfile -t CHILDREN < <(lsblk -nrpo NAME "$disk")
   for child in "${CHILDREN[@]}"; do
     holders=(/sys/class/block/"$(basename "$(readlink -f "$child")")"/holders/*)
-    [[ ! -e ${holders[0]:-} ]] || die "$child has active holders; refusing to erase it."
+    [[ ! -e ${holders[0]:-} ]] || die "$child still has active holders; refusing to erase it."
   done
 done
 
