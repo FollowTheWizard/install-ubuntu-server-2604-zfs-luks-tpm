@@ -94,10 +94,10 @@ mapfile -t DISKS < <(lsblk -dpno NAME,TYPE | awk '$2 == "disk" {print $1}' \
 (( ${#DISKS[@]} >= 2 )) || die "At least two disks are required."
 
 hr
-echo "Disks detected (mounted disks are not eligible):"
+echo "Disks detected (mounted or swap disks are not eligible):"
 ELIGIBLE=()
 for disk in "${DISKS[@]}"; do
-  if lsblk -nrpo MOUNTPOINT "$disk" | grep -qE '^/'; then
+  if lsblk -nrpo MOUNTPOINT "$disk" | grep -qE '^(/|\[SWAP\])'; then
     continue
   fi
   ELIGIBLE+=("$disk")
@@ -153,8 +153,8 @@ Ubuntu 26.04 ($SUITE) — Secure Boot remains enabled
   Disk 1: $DISK1 ($SIZE1 MiB)
   Disk 2: $DISK2 ($SIZE2 MiB)
   Per disk: ${EFI_MB} MiB EFI | ${BOOT_MB} MiB /boot RAID1 | ${ROOT_MB} MiB root RAID1 | remaining LUKS2 ZFS member
-  Root: 64 GiB mdraid1 → LUKS2 → LVM → approximately 60 GiB ext4 root + 4 GiB encrypted swap
-  Data: two LUKS2 devices → mirrored ZFS pool $POOL (usable size limited by smaller disk)
+  Root: 64 GiB mdraid1 -> LUKS2 -> LVM -> approximately 60 GiB ext4 root + 4 GiB encrypted swap
+  Data: two LUKS2 devices -> mirrored ZFS pool $POOL (usable size limited by smaller disk)
   TPM2: enrollment is deferred until the installed system boots; root and data passphrase slots remain
   Disk size difference: unused ZFS-member capacity on the larger disk is not allocated elsewhere
 
@@ -166,7 +166,7 @@ read -r -p "Type YES to erase both disks and install: " confirmation
 
 for disk in "$DISK1" "$DISK2"; do
   [[ -b $disk ]] || die "Target is no longer a block device: $disk"
-  if lsblk -nrpo MOUNTPOINT "$disk" | grep -qE '^/'; then
+  if lsblk -nrpo MOUNTPOINT "$disk" | grep -qE '^(/|\[SWAP\])'; then
     die "$disk or one of its partitions became mounted; refusing to erase it."
   fi
   mapfile -t CHILDREN < <(lsblk -nrpo NAME "$disk")
@@ -177,7 +177,7 @@ for disk in "$DISK1" "$DISK2"; do
 done
 
 hr
-echo "Prepare the live environment."
+echo "Partition and format target disks."
 for disk in "$DISK1" "$DISK2"; do
   wipefs -af "$disk"
   sgdisk --zap-all "$disk"
@@ -197,6 +197,8 @@ ZFS1=$(part "$DISK1" 4); ZFS2=$(part "$DISK2" 4)
 for device in "$ESP1" "$ESP2" "$BOOT1" "$BOOT2" "$ROOT1" "$ROOT2" "$ZFS1" "$ZFS2"; do
   [[ -b $device ]] || die "Partition did not appear: $device"
 done
+wipefs -af "$ESP1" "$ESP2" "$BOOT1" "$BOOT2" "$ROOT1" "$ROOT2" "$ZFS1" "$ZFS2"
+udevadm settle
 
 mkfs.vfat -F32 -n EFI1 "$ESP1"
 mkfs.vfat -F32 -n EFI2 "$ESP2"
@@ -248,8 +250,8 @@ ARRAY /dev/md1 UUID=$MD_ROOT_ID
 EOF
 cat > "$TARGET/etc/crypttab" <<EOF
 cryptroot UUID=$ROOT_LUKS_UUID none luks,tpm2-device=auto,x-initrd.attach
-luks-zfs1 UUID=$ZFS_LUKS_UUID1 none luks,tpm2-device=auto,nofail
-luks-zfs2 UUID=$ZFS_LUKS_UUID2 none luks,tpm2-device=auto,nofail
+luks-zfs1 UUID=$ZFS_LUKS_UUID1 none luks,tpm2-device=auto,nofail,x-systemd.device-timeout=15s
+luks-zfs2 UUID=$ZFS_LUKS_UUID2 none luks,tpm2-device=auto,nofail,x-systemd.device-timeout=15s
 EOF
 ROOT_UUID=$(blkid -s UUID -o value /dev/vgubuntu/root)
 SWAP_UUID=$(blkid -s UUID -o value /dev/vgubuntu/swap)
@@ -258,13 +260,13 @@ ESP_UUID2=$(blkid -s UUID -o value "$ESP2")
 cat > "$TARGET/etc/fstab" <<EOF
 UUID=$ROOT_UUID / ext4 errors=remount-ro 0 1
 UUID=$MD_BOOT_UUID /boot ext4 defaults 0 2
-UUID=$ESP_UUID1 /boot/efi vfat umask=0077 0 1
+UUID=$ESP_UUID1 /boot/efi vfat umask=0077,nofail,x-systemd.device-timeout=15s 0 1
 UUID=$ESP_UUID2 /boot/efi2 vfat umask=0077,nofail,x-systemd.device-timeout=15s 0 1
 UUID=$SWAP_UUID none swap sw 0 0
 EOF
 
 zpool create -f -R "$TARGET" -o ashift=12 -o autotrim=on \
-  -o cachefile="$TARGET/etc/zfs/zpool.cache" \
+  -o cachefile=none \
   -O acltype=posixacl -O xattr=sa -O compression=zstd \
   -O atime=off -O mountpoint=none "$POOL" mirror \
   /dev/mapper/luks-zfs1 /dev/mapper/luks-zfs2
@@ -295,6 +297,7 @@ export DEBIAN_FRONTEND=noninteractive
 echo "$NEW_HOSTNAME" > /etc/hostname
 printf '127.0.0.1 localhost\n127.0.1.1 %s\n::1 localhost ip6-localhost ip6-loopback\n' \
   "$NEW_HOSTNAME" > /etc/hosts
+rm -f /etc/apt/sources.list.d/ubuntu.sources
 cat > /etc/apt/sources.list <<EOS
 deb $MIRROR $SUITE main restricted universe multiverse
 deb $MIRROR $SUITE-updates main restricted universe multiverse
@@ -309,7 +312,7 @@ mkdir -p /etc/dracut.conf.d
 cat > /etc/dracut.conf.d/90-root-luks-mdraid.conf <<'EOS'
 hostonly="no"
 hostonly_cmdline="no"
-add_dracutmodules+=" mdraid crypt lvm tpm2-tss "
+add_dracutmodules+=" systemd systemd-initrd mdraid crypt lvm tpm2-tss "
 install_items+=" /etc/crypttab /etc/mdadm/mdadm.conf "
 compress="zstd"
 EOS
@@ -327,7 +330,7 @@ systemctl enable systemd-resolved.service
 rm -f /etc/resolv.conf
 ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
-sed -i 's|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX="root=/dev/mapper/vgubuntu-root rd.md=1 rd.md.uuid='"$MD_BOOT_ID"' rd.md.uuid='"$MD_ROOT_ID"' rd.luks.uuid=luks-'"$ROOT_LUKS_UUID"'"|' /etc/default/grub
+sed -i 's|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX="root=/dev/mapper/vgubuntu-root rd.md=1 rd.md.uuid='"$MD_BOOT_ID"' rd.md.uuid='"$MD_ROOT_ID"' rd.luks.uuid='"$ROOT_LUKS_UUID"'"|' /etc/default/grub
 sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=""|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT_STYLE=.*|GRUB_TIMEOUT_STYLE=menu|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=3|' /etc/default/grub
@@ -340,30 +343,39 @@ Wants=cryptsetup.target
 After=systemd-udev-settle.service cryptsetup.target
 After=systemd-cryptsetup@luks\x2dzfs1.service
 After=systemd-cryptsetup@luks\x2dzfs2.service
-Before=zfs-mount.service
+Before=zfs-import.target zfs-mount.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/sbin/modprobe zfs
-ExecStart=/usr/sbin/zpool import -N -d /dev/mapper/luks-zfs1 -d /dev/mapper/luks-zfs2 dpool
+ExecStart=/usr/sbin/zpool import -N -d /dev/mapper dpool
 
 [Install]
 WantedBy=zfs-import.target
 EOS
-systemctl disable zfs-import-cache.service zfs-import-scan.service
+systemctl disable zfs-import-cache.service zfs-import-scan.service 2>/dev/null || true
 systemctl enable zfs-import-dpool.service zfs-mount.service zfs-zed.service
 
 cat > /usr/local/sbin/sync-efi <<'EOS'
 #!/bin/sh
 set -eu
+mountpoint -q /boot/efi || { echo "WARNING: primary ESP is not mounted; skipping sync." >&2; exit 0; }
+if [ -s /boot/efi/EFI/ubuntu/shimx64.efi ] && [ -s /boot/efi/EFI/ubuntu/grubx64.efi ]; then
+  mkdir -p /boot/efi/EFI/BOOT
+  cp -f /boot/efi/EFI/ubuntu/shimx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI
+  cp -f /boot/efi/EFI/ubuntu/grubx64.efi /boot/efi/EFI/BOOT/grubx64.efi
+  [ -s /boot/efi/EFI/ubuntu/mmx64.efi ] && cp -f /boot/efi/EFI/ubuntu/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi
+  [ -s /boot/efi/EFI/ubuntu/grub.cfg ] && cp -f /boot/efi/EFI/ubuntu/grub.cfg /boot/efi/EFI/BOOT/grub.cfg
+fi
 mountpoint -q /boot/efi2 || { echo "WARNING: secondary ESP is not mounted; skipping sync." >&2; exit 0; }
+[ -s /boot/efi/EFI/ubuntu/grubx64.efi ] || { echo "ERROR: primary ESP missing grubx64.efi; aborting sync." >&2; exit 1; }
 rsync -a --delete /boot/efi/ /boot/efi2/
 EOS
 chmod 755 /usr/local/sbin/sync-efi
 mkdir -p /etc/apt/apt.conf.d
 cat > /etc/apt/apt.conf.d/99-sync-efi <<'EOS'
-DPkg::Post-Invoke { "if mountpoint -q /boot/efi2; then /usr/local/sbin/sync-efi; fi"; };
+DPkg::Post-Invoke { "if mountpoint -q /boot/efi && mountpoint -q /boot/efi2; then /usr/local/sbin/sync-efi; fi"; };
 EOS
 
 dracut --force --regenerate-all
@@ -373,22 +385,21 @@ for kernel in "${installed_kernels[@]}"; do
   initrd="/boot/initrd.img-$kernel"
   [[ -s $initrd ]] || { echo "ERROR: dracut did not create $initrd." >&2; exit 1; }
   dracut_modules=$(lsinitrd -m "$initrd")
-  for required_module in mdraid crypt lvm tpm2-tss; do
+  for required_module in systemd systemd-initrd mdraid crypt lvm tpm2-tss; do
     grep -Fxq "$required_module" <<<"$dracut_modules" || {
       echo "ERROR: initramfs for $kernel is missing dracut module $required_module." >&2
       exit 1
     }
   done
 done
+
 update-grub
 grub-install --target=x86_64-efi --efi-directory=/boot/efi \
   --bootloader-id=ubuntu --no-nvram --recheck --uefi-secure-boot
-grub-install --target=x86_64-efi --efi-directory=/boot/efi2 \
-  --bootloader-id=ubuntu --no-nvram --recheck --uefi-secure-boot
-rsync -a --delete /boot/efi/ /boot/efi2/
+/usr/local/sbin/sync-efi
 grub-script-check /boot/grub/grub.cfg
 for esp in /boot/efi /boot/efi2; do
-  for efi_file in EFI/ubuntu/shimx64.efi EFI/ubuntu/grubx64.efi; do
+  for efi_file in EFI/ubuntu/shimx64.efi EFI/ubuntu/grubx64.efi EFI/BOOT/BOOTX64.EFI EFI/BOOT/grubx64.efi; do
     [[ -s "$esp/$efi_file" ]] || {
       echo "ERROR: missing Secure Boot loader $esp/$efi_file." >&2
       exit 1
@@ -411,7 +422,8 @@ network:
   renderer: networkd
   ethernets:
     all-en:
-      match: { name: "en*" }
+      match:
+        name: ["en*", "eth*"]
       dhcp4: true
       dhcp6: true
 EOS
@@ -472,10 +484,12 @@ umount "$TARGET/boot/efi2"
 umount "$TARGET/boot/efi"
 umount "$TARGET/boot"
 umount "$TARGET"
+udevadm settle
 cryptsetup close luks-zfs1
 cryptsetup close luks-zfs2
 vgchange -an vgubuntu
 cryptsetup close cryptroot
+udevadm settle
 mdadm --stop /dev/md0
 mdadm --stop /dev/md1
 
