@@ -14,6 +14,7 @@ EFI_MB=1024
 BOOT_MB=2048
 ROOT_MB=65536
 MIN_DATA_MB=8192
+MIN_DISK_MB=$(( EFI_MB + BOOT_MB + ROOT_MB + MIN_DATA_MB + 16 ))
 POOL=dpool
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -81,6 +82,67 @@ stable_id() {
 disk_size_mib() { echo $(( $(blockdev --getsize64 "$1") / 1048576 )); }
 
 hr
+echo "Scanning block devices (minimum required size per disk: ${MIN_DISK_MB} MiB)..."
+mapfile -t DISKS < <(lsblk -dpno NAME,TYPE | awk '$2 == "disk" {print $1}' \
+  | grep -vE '/dev/(loop|sr|zram|fd|ram)' || true)
+
+ELIGIBLE=()
+SKIPPED_COUNT=0
+for disk in "${DISKS[@]}"; do
+  size_str=$(lsblk -dno SIZE "$disk" 2>/dev/null | tr -d '[:space:]' || echo "?")
+  model_str=$(lsblk -dno MODEL "$disk" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//' || true)
+  [[ -n $model_str ]] || model_str="Unknown model"
+
+  active_mounts=$(lsblk -nrpo MOUNTPOINT "$disk" | grep -E '^(/|\[SWAP\])' | paste -sd ', ' - || true)
+  if [[ -n $active_mounts ]]; then
+    printf '  [SKIP] %-14s %8s  %-24s (in use: %s)\n' "$disk" "$size_str" "$model_str" "$active_mounts"
+    SKIPPED_COUNT=$(( SKIPPED_COUNT + 1 ))
+    continue
+  fi
+
+  active_holders=()
+  while IFS= read -r child; do
+    [[ -n $child ]] || continue
+    child_base=$(basename "$(readlink -f "$child")")
+    for holder in /sys/class/block/"$child_base"/holders/*; do
+      if [[ -e $holder ]]; then
+        active_holders+=("$(basename "$holder")")
+      fi
+    done
+  done < <(lsblk -nrpo NAME "$disk")
+  if (( ${#active_holders[@]} > 0 )); then
+    printf '  [SKIP] %-14s %8s  %-24s (active holders: %s)\n' \
+      "$disk" "$size_str" "$model_str" "${active_holders[*]}"
+    SKIPPED_COUNT=$(( SKIPPED_COUNT + 1 ))
+    continue
+  fi
+
+  size_mib=$(disk_size_mib "$disk")
+  if (( size_mib < MIN_DISK_MB )); then
+    printf '  [SKIP] %-14s %8s  %-24s (too small: %s MiB < %s MiB)\n' \
+      "$disk" "$size_str" "$model_str" "$size_mib" "$MIN_DISK_MB"
+    SKIPPED_COUNT=$(( SKIPPED_COUNT + 1 ))
+    continue
+  fi
+
+  ELIGIBLE+=("$disk")
+  printf '  [%2d]   %-14s %8s  %-24s %s\n' \
+    "${#ELIGIBLE[@]}" "$disk" "$size_str" "$model_str" "$(stable_id "$disk")"
+done
+
+if (( ${#ELIGIBLE[@]} < 2 )); then
+  cat >&2 <<EOF
+
+ERROR: Found ${#ELIGIBLE[@]} eligible target disk(s) (2 required; ${SKIPPED_COUNT} skipped).
+Possible causes:
+  - Only one physical drive is connected or enabled in UEFI/BIOS (check SATA/M.2 cables and AHCI mode).
+  - A target disk has active swap or RAID/LVM/LUKS holders (run 'swapoff -a' or stop arrays before retrying).
+  - One of the drives is smaller than the minimum ${MIN_DISK_MB} MiB layout requirement.
+EOF
+  exit 1
+fi
+
+hr
 echo "Install tools and confirm the signed ZFS module can load with Secure Boot enabled."
 apt-get update
 DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends \
@@ -88,30 +150,7 @@ DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-instal
   dosfstools efibootmgr rsync util-linux
 modprobe zfs || die "The Ubuntu-signed ZFS module could not load with Secure Boot enabled; no target disks have been changed."
 
-mapfile -t DISKS < <(lsblk -dpno NAME,TYPE | awk '$2 == "disk" {print $1}' \
-  | grep -vE '/dev/(loop|sr|zram|fd|ram)')
-(( ${#DISKS[@]} >= 2 )) || die "At least two disks are required."
-
 hr
-echo "Disks detected (mounted or swap disks are not eligible):"
-ELIGIBLE=()
-for disk in "${DISKS[@]}"; do
-  active_mounts=$(lsblk -nrpo MOUNTPOINT "$disk" | grep -E '^(/|\[SWAP\])' | paste -sd, - || true)
-  if [[ -n $active_mounts ]]; then
-    printf '  -  %-14s %8s  SKIPPED (in use: %s)\n' "$disk" "$(lsblk -dno SIZE "$disk")" "$active_mounts"
-    continue
-  fi
-  ELIGIBLE+=("$disk")
-done
-(( ${#ELIGIBLE[@]} >= 2 )) || die "Need two unmounted target disks; check that the live medium is not selected."
-(( ${#ELIGIBLE[@]} >= 2 )) || die "Need two unmounted target disks; check that the live medium is not selected."
-for index in "${!ELIGIBLE[@]}"; do
-  disk=${ELIGIBLE[$index]}
-  printf ' %2d) %-14s %8s  %-24s %s\n' "$((index+1))" "$disk" \
-    "$(lsblk -dno SIZE "$disk")" "$(lsblk -dno MODEL "$disk" | tr -s ' ')" \
-    "$(stable_id "$disk")"
-done
-
 pick_disk() {
   local number
   while :; do
