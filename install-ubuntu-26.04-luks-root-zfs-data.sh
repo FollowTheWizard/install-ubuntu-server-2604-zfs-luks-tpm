@@ -107,22 +107,29 @@ release_holders() {
     if [[ $holder_base == dm-* ]]; then
       dm_name=$(dmsetup info -c --noheadings -o name "$holder_dev" 2>/dev/null || true)
       vg_name=$(lvs --noheadings -o vg_name "$holder_dev" 2>/dev/null | tr -d '[:space:]' || true)
+      [[ -n $vg_name ]] || vg_name=$(pvs --noheadings -o vg_name "$holder_dev" 2>/dev/null | tr -d '[:space:]' || true)
       if [[ -n $vg_name ]]; then
         vgchange -an "$vg_name" 2>/dev/null || true
+        udevadm settle
       fi
       if [[ -n $dm_name ]]; then
         cryptsetup close "$dm_name" 2>/dev/null || dmsetup remove --force "$dm_name" 2>/dev/null || true
+        udevadm settle
       fi
     elif [[ $holder_base == md* ]]; then
+      udevadm settle
       mdadm --stop "$holder_dev" 2>/dev/null || true
     fi
   done
 }
 
 teardown_selected_disks() {
-  local disk dev
+  local disk dev mp
   if mountpoint -q "$TARGET" || findmnt -rn -o TARGET | grep -qE "^${TARGET}(/|$)"; then
-    umount -R "$TARGET" 2>/dev/null || umount -l "$TARGET" 2>/dev/null || true
+    while IFS= read -r mp; do
+      [[ -n $mp ]] || continue
+      umount -R "$mp" 2>/dev/null || umount -Rl "$mp" 2>/dev/null || true
+    done < <(findmnt -rn -o TARGET | awk -v t="$TARGET" '$0 == t || index($0, t "/") == 1' | sort -r)
   fi
   for disk in "$@"; do
     while IFS= read -r dev; do
@@ -136,6 +143,14 @@ teardown_selected_disks() {
       zpool export -f "$pool" 2>/dev/null || true
     done < <(zpool list -H -o name 2>/dev/null || true)
   fi
+  vgchange -an vgubuntu 2>/dev/null || true
+  for dm_name in luks-zfs1 luks-zfs2 cryptroot; do
+    cryptsetup close "$dm_name" 2>/dev/null || dmsetup remove --force "$dm_name" 2>/dev/null || true
+  done
+  udevadm settle
+  for md_dev in /dev/md0 /dev/md1; do
+    [[ -b $md_dev ]] && { mdadm --stop "$md_dev" 2>/dev/null || true; }
+  done
   for disk in "$@"; do
     while IFS= read -r dev; do
       [[ -n $dev ]] || continue
@@ -328,6 +343,11 @@ BOOT1=$(part "$DISK1" 2); BOOT2=$(part "$DISK2" 2)
 ROOT1=$(part "$DISK1" 3); ROOT2=$(part "$DISK2" 3)
 ZFS1=$(part "$DISK1" 4); ZFS2=$(part "$DISK2" 4)
 for device in "$ESP1" "$ESP2" "$BOOT1" "$BOOT2" "$ROOT1" "$ROOT2" "$ZFS1" "$ZFS2"; do
+  for _ in {1..10}; do
+    [[ -b $device ]] && break
+    udevadm settle
+    sleep 0.5
+  done
   [[ -b $device ]] || die "Partition did not appear: $device"
 done
 
@@ -338,8 +358,8 @@ udevadm settle
 
 mkfs.vfat -F32 -n EFI1 "$ESP1"
 mkfs.vfat -F32 -n EFI2 "$ESP2"
-mdadm --create /dev/md0 --run --metadata=1.0 --level=1 --raid-devices=2 "$BOOT1" "$BOOT2"
-mdadm --create /dev/md1 --run --metadata=1.2 --level=1 --raid-devices=2 "$ROOT1" "$ROOT2"
+mdadm --create /dev/md0 --run --homehost="$NEW_HOSTNAME" --name=0 --metadata=1.0 --level=1 --raid-devices=2 "$BOOT1" "$BOOT2"
+mdadm --create /dev/md1 --run --homehost="$NEW_HOSTNAME" --name=1 --metadata=1.2 --level=1 --raid-devices=2 "$ROOT1" "$ROOT2"
 udevadm settle
 mkfs.ext4 -F -L ubuntu-boot /dev/md0
 
@@ -385,6 +405,7 @@ HOMEHOST <system>
 ARRAY /dev/md0 UUID=$MD_BOOT_ID
 ARRAY /dev/md1 UUID=$MD_ROOT_ID
 EOF
+cp "$TARGET/etc/mdadm/mdadm.conf" "$TARGET/etc/mdadm.conf"
 cat > "$TARGET/etc/crypttab" <<EOF
 cryptroot UUID=$ROOT_LUKS_UUID none luks,tpm2-device=auto,x-initrd.attach
 luks-zfs1 UUID=$ZFS_LUKS_UUID1 none luks,tpm2-device=auto,nofail,x-systemd.device-timeout=15s
@@ -402,6 +423,8 @@ UUID=$ESP_UUID2 /boot/efi2 vfat umask=0077,nofail,x-systemd.device-timeout=15s 0
 UUID=$SWAP_UUID none swap sw 0 0
 EOF
 
+zgenhostid -f
+cp /etc/hostid "$TARGET/etc/hostid"
 zpool create -f -R "$TARGET" -o ashift=12 -o autotrim=on \
   -o cachefile=none \
   -O acltype=posixacl -O xattr=sa -O compression=zstd \
@@ -446,19 +469,22 @@ apt-get install -y --no-install-recommends locales
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8
 
+apt-get install -y --no-install-recommends \
+  dracut zstd mdadm lvm2 cryptsetup systemd-cryptsetup systemd-sysv tpm2-tools
+
 mkdir -p /etc/dracut.conf.d
 cat > /etc/dracut.conf.d/90-root-luks-mdraid.conf <<'EOS'
 hostonly="no"
 hostonly_cmdline="no"
-add_dracutmodules+=" systemd systemd-initrd mdraid crypt lvm tpm2-tss "
-install_items+=" /etc/crypttab /etc/mdadm/mdadm.conf "
+mdadmconf="yes"
+lvmconf="yes"
+add_dracutmodules+=" systemd systemd-initrd mdraid crypt systemd-cryptsetup lvm tpm2-tss "
+install_items+=" /etc/crypttab /etc/mdadm/mdadm.conf /etc/mdadm.conf "
 compress="zstd"
 EOS
 
-apt-get install -y --no-install-recommends dracut
 apt-get install -y --no-install-recommends \
   linux-generic linux-headers-generic \
-  mdadm lvm2 cryptsetup systemd-cryptsetup systemd-sysv tpm2-tools \
   grub-efi-amd64 grub-efi-amd64-signed shim-signed efibootmgr dosfstools \
   zfsutils-linux zfs-zed \
   ubuntu-minimal openssh-server sudo netplan.io systemd-resolved \
@@ -473,7 +499,8 @@ systemctl enable systemd-resolved.service
 rm -f /etc/resolv.conf
 ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
-sed -i 's|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX="root=/dev/mapper/vgubuntu-root rd.md=1 rd.md.uuid='"$MD_BOOT_ID"' rd.md.uuid='"$MD_ROOT_ID"' rd.luks.uuid='"$ROOT_LUKS_UUID"'"|' /etc/default/grub
+GRUB_CMDLINE="root=/dev/mapper/vgubuntu-root rd.md=1 rd.md.conf=1 rd.md.uuid=$MD_BOOT_ID rd.md.uuid=$MD_ROOT_ID rd.luks=1 rd.luks.uuid=$ROOT_LUKS_UUID rd.luks.name=$ROOT_LUKS_UUID=cryptroot rd.lvm=1 rd.lvm.vg=vgubuntu rd.lvm.lv=vgubuntu/root rd.lvm.lv=vgubuntu/swap"
+sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$GRUB_CMDLINE\"|" /etc/default/grub
 sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=""|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT_STYLE=.*|GRUB_TIMEOUT_STYLE=menu|' /etc/default/grub
 sed -i 's|^GRUB_TIMEOUT=.*|GRUB_TIMEOUT=3|' /etc/default/grub
@@ -492,7 +519,8 @@ Before=zfs-import.target zfs-mount.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/sbin/modprobe zfs
-ExecStart=/usr/sbin/zpool import -N -d /dev/mapper dpool
+ExecStart=/bin/sh -c '/usr/sbin/zpool list -H -o name dpool >/dev/null 2>&1 || /usr/sbin/zpool import -N -d /dev/mapper dpool'
+ExecStop=/bin/sh -c '/usr/sbin/zpool list -H -o name dpool >/dev/null 2>&1 && /usr/sbin/zpool export dpool || true'
 
 [Install]
 WantedBy=zfs-import.target
@@ -528,7 +556,7 @@ for kernel in "${installed_kernels[@]}"; do
   initrd="/boot/initrd.img-$kernel"
   [[ -s $initrd ]] || { echo "ERROR: dracut did not create $initrd." >&2; exit 1; }
   dracut_modules=$(lsinitrd -m "$initrd")
-  for required_module in systemd systemd-initrd mdraid crypt lvm tpm2-tss; do
+  for required_module in systemd systemd-initrd mdraid crypt systemd-cryptsetup lvm tpm2-tss; do
     grep -Fxq "$required_module" <<<"$dracut_modules" || {
       echo "ERROR: initramfs for $kernel is missing dracut module $required_module." >&2
       exit 1
@@ -575,6 +603,7 @@ chmod 600 /etc/netplan/01-netcfg.yaml
 cat > /usr/local/sbin/enroll-tpm2 <<'EOS'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+[[ $EUID -eq 0 ]] || { echo "ERROR: run enroll-tpm2 as root (sudo enroll-tpm2)." >&2; exit 1; }
 PCRS="${1:-7}"
 [[ $PCRS =~ ^[0-9]+(\+[0-9]+)*$ ]] || { echo "Usage: enroll-tpm2 [PCRS, default 7; use + between PCRs]" >&2; exit 2; }
 [[ -c /dev/tpmrm0 ]] || { echo "ERROR: no TPM2 resource-manager device (/dev/tpmrm0)." >&2; exit 1; }
@@ -606,35 +635,53 @@ chroot "$TARGET" /usr/bin/env \
   bash /root/target-setup.sh
 rm -f "$TARGET/root/target-setup.sh"
 
-for disk in "$DISK1" "$DISK2"; do
+for disk in "$DISK2" "$DISK1"; do
   disk_real=$(readlink -f "$disk")
   partition_number=1
+  label="ubuntu ($(basename "$disk"))"
+  while IFS= read -r bootnum; do
+    [[ -n $bootnum ]] || continue
+    efibootmgr -b "$bootnum" -B >/dev/null 2>&1 || true
+  done < <(efibootmgr 2>/dev/null | awk -v l="$label" 'index($0, l) { sub(/^Boot/, "", $1); sub(/\*$/, "", $1); if ($1 ~ /^[0-9A-Fa-f]{4}$/) print $1 }' || true)
   efibootmgr -c -g -d "$disk_real" -p "$partition_number" \
-    -L "ubuntu ($(basename "$disk"))" -l '\EFI\ubuntu\shimx64.efi' \
+    -L "$label" -l '\EFI\ubuntu\shimx64.efi' \
     || echo "WARNING: failed to create a UEFI boot entry for $disk; add it in firmware setup."
 done
+
+wait_for_md_sync() {
+  local md=$1 base action
+  base=$(basename "$(readlink -f "$md")")
+  while [[ -r /sys/class/block/$base/md/sync_action ]]; do
+    read -r action < "/sys/class/block/$base/md/sync_action" || break
+    [[ $action == idle || $action == none ]] && return 0
+    mdadm --wait "$md" || true
+    sleep 1
+  done
+}
 
 sync
 echo
 echo "Waiting for initial mdraid resync before reporting completion."
-mdadm --wait /dev/md0
-mdadm --wait /dev/md1
+wait_for_md_sync /dev/md0
+wait_for_md_sync /dev/md1
 echo "Initial mirror synchronization complete."
 
-for filesystem in dev proc sys; do umount -R "$TARGET/$filesystem"; done
-umount "$TARGET/run"
-umount "$TARGET/boot/efi2"
-umount "$TARGET/boot/efi"
-umount "$TARGET/boot"
-umount "$TARGET"
+udevadm settle
+for filesystem in dev proc sys; do
+  umount -R "$TARGET/$filesystem" 2>/dev/null || umount -Rl "$TARGET/$filesystem" 2>/dev/null || true
+done
+for mp in "$TARGET/run" "$TARGET/boot/efi2" "$TARGET/boot/efi" "$TARGET/boot" "$TARGET"; do
+  umount "$mp" 2>/dev/null || { sleep 1; umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true; }
+done
 udevadm settle
 cryptsetup close luks-zfs1
 cryptsetup close luks-zfs2
 vgchange -an vgubuntu
 cryptsetup close cryptroot
 udevadm settle
-mdadm --stop /dev/md0
-mdadm --stop /dev/md1
+for md_dev in /dev/md0 /dev/md1; do
+  mdadm --stop "$md_dev" || { udevadm settle; sleep 1; mdadm --stop "$md_dev"; }
+done
 
 cat <<EOF
 Installation files are in place. Remove the live media and boot the installed system
