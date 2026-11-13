@@ -96,11 +96,14 @@ hr
 echo "Disks detected (mounted or swap disks are not eligible):"
 ELIGIBLE=()
 for disk in "${DISKS[@]}"; do
-  if lsblk -nrpo MOUNTPOINT "$disk" | grep -qE '^(/|\[SWAP\])'; then
+  active_mounts=$(lsblk -nrpo MOUNTPOINT "$disk" | grep -E '^(/|\[SWAP\])' | paste -sd, - || true)
+  if [[ -n $active_mounts ]]; then
+    printf '  -  %-14s %8s  SKIPPED (in use: %s)\n' "$disk" "$(lsblk -dno SIZE "$disk")" "$active_mounts"
     continue
   fi
   ELIGIBLE+=("$disk")
 done
+(( ${#ELIGIBLE[@]} >= 2 )) || die "Need two unmounted target disks; check that the live medium is not selected."
 (( ${#ELIGIBLE[@]} >= 2 )) || die "Need two unmounted target disks; check that the live medium is not selected."
 for index in "${!ELIGIBLE[@]}"; do
   disk=${ELIGIBLE[$index]}
