@@ -277,8 +277,9 @@ MD_ROOT_ID=$(mdadm --detail --export /dev/md1 | sed -n 's/^MD_UUID=//p')
 
 mkdir -p "$TARGET"
 mount /dev/vgubuntu/root "$TARGET"
-mkdir -p "$TARGET/boot" "$TARGET/boot/efi" "$TARGET/boot/efi2" "$TARGET/data"
+mkdir -p "$TARGET/boot" "$TARGET/data"
 mount /dev/md0 "$TARGET/boot"
+mkdir -p "$TARGET/boot/efi" "$TARGET/boot/efi2"
 mount "$ESP1" "$TARGET/boot/efi"
 mount "$ESP2" "$TARGET/boot/efi2"
 debootstrap --arch=amd64 "$SUITE" "$TARGET" "$MIRROR"
