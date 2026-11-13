@@ -145,6 +145,18 @@ teardown_selected_disks() {
   udevadm settle
 }
 
+print_eligible_disks() {
+  local index disk size_str model_str
+  for index in "${!ELIGIBLE[@]}"; do
+    disk=${ELIGIBLE[$index]}
+    size_str=$(lsblk -dno SIZE "$disk" 2>/dev/null | tr -d '[:space:]' || echo "?")
+    model_str=$(lsblk -dno MODEL "$disk" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//' || true)
+    [[ -n $model_str ]] || model_str="Unknown model"
+    printf '  [%2d]   %-14s %8s  %-24s %s\n' \
+      "$((index+1))" "$disk" "$size_str" "$model_str" "$(stable_id "$disk")"
+  done
+}
+
 hr
 echo "Scanning block devices (minimum required size per disk: ${MIN_DISK_MB} MiB)..."
 mapfile -t DISKS < <(lsblk -dpno NAME,TYPE | awk '$2 == "disk" {print $1}' \
@@ -212,6 +224,9 @@ DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-instal
 modprobe zfs || die "The Ubuntu-signed ZFS module could not load with Secure Boot enabled; no target disks have been changed."
 
 hr
+echo "Eligible target disks:"
+print_eligible_disks
+
 pick_disk() {
   local number
   while :; do
@@ -290,8 +305,16 @@ done
 hr
 echo "Partition and format target disks."
 for disk in "$DISK1" "$DISK2"; do
+  while IFS= read -r dev; do
+    [[ -n $dev && $(readlink -f "$dev") != "$(readlink -f "$disk")" ]] || continue
+    wipefs -af "$dev" 2>/dev/null || true
+  done < <(lsblk -nrpo NAME "$disk")
+  partx -d "$disk" 2>/dev/null || true
   wipefs -af "$disk"
   sgdisk --zap-all "$disk"
+  partprobe "$disk" 2>/dev/null || true
+  udevadm settle
+
   sgdisk -n1:1M:+${EFI_MB}M  -t1:EF00 -c1:EFI "$disk"
   sgdisk -n2:0:+${BOOT_MB}M -t2:FD00 -c2:boot-raid "$disk"
   sgdisk -n3:0:+${ROOT_MB}M -t3:FD00 -c3:root-raid "$disk"
@@ -299,7 +322,6 @@ for disk in "$DISK1" "$DISK2"; do
   partprobe "$disk"
 done
 udevadm settle
-sleep 2
 
 ESP1=$(part "$DISK1" 1); ESP2=$(part "$DISK2" 1)
 BOOT1=$(part "$DISK1" 2); BOOT2=$(part "$DISK2" 2)
@@ -308,6 +330,9 @@ ZFS1=$(part "$DISK1" 4); ZFS2=$(part "$DISK2" 4)
 for device in "$ESP1" "$ESP2" "$BOOT1" "$BOOT2" "$ROOT1" "$ROOT2" "$ZFS1" "$ZFS2"; do
   [[ -b $device ]] || die "Partition did not appear: $device"
 done
+
+# Stop any mdraid arrays udev auto-assembled upon partition creation before wiping signatures
+teardown_selected_disks "$DISK1" "$DISK2"
 wipefs -af "$ESP1" "$ESP2" "$BOOT1" "$BOOT2" "$ROOT1" "$ROOT2" "$ZFS1" "$ZFS2"
 udevadm settle
 
